@@ -167,6 +167,7 @@ async function main() {
   assert.equal(Number(statsA.cFull ?? statsA.c_full), 1);
   assert.equal(Number(statsD.cHalf ?? statsD.c_half), 1);
   assert.equal(Number(statsP.cZero ?? statsP.c_zero), 1);
+  console.log("PASS happy path: score 93 -> full (c_full 1), score 80 -> half (c_half 1), score 61 -> zero (c_zero 1)");
 
   await program.methods
     .closeMandate()
@@ -197,6 +198,7 @@ async function main() {
         .rpc(),
     "ProviderNotRegistered",
   );
+  console.log("PASS injected transfer: ProviderNotRegistered");
   await expectFail(
     () =>
       program.methods
@@ -213,6 +215,7 @@ async function main() {
         .rpc(),
     "OverUnitPrice",
   );
+  console.log("PASS over unit price: OverUnitPrice");
   await program.methods
     .purchase(0, bn(100_000), bn(400_000), 95)
     .accounts({
@@ -241,6 +244,7 @@ async function main() {
         .rpc(),
     "LineBudgetExceeded",
   );
+  console.log("PASS line budget drain: LineBudgetExceeded");
   await expectFail(
     () =>
       program.methods
@@ -257,6 +261,7 @@ async function main() {
         .rpc(),
     "NoMatchingLineItem",
   );
+  console.log("PASS off-plan category: NoMatchingLineItem");
 
   const m3 = await create(3);
   await program.methods
@@ -291,6 +296,7 @@ async function main() {
         .rpc(),
     "NotVerifier",
   );
+  console.log("PASS fake verifier: NotVerifier");
   await expectFail(
     () =>
       program.methods
@@ -309,6 +315,7 @@ async function main() {
         .rpc(),
     "NotVerifier",
   );
+  console.log("PASS agent settles: NotVerifier");
   await program.methods
     .settle(93)
     .accounts({
@@ -341,6 +348,7 @@ async function main() {
         .rpc(),
     "OrderAlreadySettled",
   );
+  console.log("PASS double settlement: OrderAlreadySettled");
 
   const m4 = await create(4, 3);
   await new Promise((r) => setTimeout(r, 5000));
@@ -360,6 +368,7 @@ async function main() {
         .rpc(),
     "MandateExpired",
   );
+  console.log("PASS expired mandate: MandateExpired");
 
   const m5 = await create(5);
   await expectFail(
@@ -378,6 +387,7 @@ async function main() {
         .rpc(),
     "ProviderNotRegistered",
   );
+  console.log("PASS impostor provider: ProviderNotRegistered");
   await expectFail(
     () =>
       program.methods
@@ -394,6 +404,7 @@ async function main() {
         .rpc(),
     "NotOwner",
   );
+  console.log("PASS close by agent: NotOwner");
 
   const m6 = await create(6);
   await program.methods
@@ -424,6 +435,7 @@ async function main() {
     .rpc();
   const order = await program.account.order.fetch(orderPda(m6, 0));
   assert.equal(Number(order.paid), 0);
+  console.log("PASS overclaim: score 61 paid 0");
 
   console.log("all localnet tests passed");
 }
