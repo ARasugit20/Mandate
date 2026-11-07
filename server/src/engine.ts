@@ -3,11 +3,13 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import {
   ATTACK_CARDS,
   CATEGORIES,
+  CHAIN_HEALTH_ROWS,
   DEMO_BUDGET,
   DEMO_GOAL,
   DEMO_RESEARCH_CAP,
   type AttackRun,
   type CategoryId,
+  type HealthResponse,
   type HealthRow,
   type LinePlan,
   type MinScore,
@@ -216,6 +218,9 @@ export async function runMission(id: string) {
   if (miss.status !== "signed" && miss.status !== "running") throw new Error(`Cannot run mission in status ${miss.status}`);
   const err = chainConfigured();
   if (err) throw new Error(err);
+  // Purchase commits vault funds before delivery, and only the verifier can
+  // release them. Refuse up front rather than orphan an unsettled order.
+  if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
   db.prepare("UPDATE missions SET status=? WHERE id=?").run("running", id);
   const agent = new AgentClient();
   const verifier = new VerifierClient();
@@ -388,7 +393,7 @@ export async function warmup(n: number) {
   return results;
 }
 
-export async function health(): Promise<{ rows: HealthRow[]; ok: boolean }> {
+export async function health(): Promise<HealthResponse> {
   const rows: HealthRow[] = [];
   const push = (name: string, status: HealthRow["status"], detail: string) => rows.push({ name, status, detail });
 
@@ -464,11 +469,14 @@ export async function health(): Promise<{ rows: HealthRow[]; ok: boolean }> {
     push("Providers registered", missing.length ? "fail" : "pass", missing.length ? `missing ${missing.join(",")}` : "alpha, deep, premium");
   }
 
-  if (!ANTHROPIC_API_KEY) push("Anthropic", "error", "ANTHROPIC_API_KEY is not set");
+  if (!ANTHROPIC_API_KEY) push("Anthropic", "error", "ANTHROPIC_API_KEY not set");
   else push("Anthropic", "pass", "key present");
 
   const ok = rows.every((r) => r.status === "pass");
-  return { rows, ok };
+  const chainOk = CHAIN_HEALTH_ROWS.every(
+    (name) => rows.find((r) => r.name === name)?.status === "pass",
+  );
+  return { rows, ok, chainOk };
 }
 
 export async function runAttacks(): Promise<AttackRun[]> {

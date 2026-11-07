@@ -36,7 +36,7 @@ const DeliverySchema = z.object({
 const RubricSchema = z.object({ score: z.number().min(0).max(100) });
 
 function client(): Anthropic {
-  if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set");
+  if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
   return new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 }
 

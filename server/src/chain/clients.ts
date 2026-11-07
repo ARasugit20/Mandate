@@ -240,7 +240,12 @@ export class VerifierClient {
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .instruction();
-    return sendExpectFail(this.connection, opts.signer, [ix]);
+    // Paying the fee is not authorization. A funded payer lets an unfunded
+    // impostor key reach the program so `settle` can reject it by name.
+    const payerIsSigner = opts.signer.publicKey.equals(this.verifier.publicKey);
+    return payerIsSigner
+      ? sendExpectFail(this.connection, this.verifier, [ix])
+      : sendExpectFail(this.connection, this.verifier, [ix], [opts.signer]);
   }
 }
 

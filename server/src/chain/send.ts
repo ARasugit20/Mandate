@@ -59,6 +59,21 @@ export function errorNameFromLogs(logs: string[] | null | undefined): string {
   return m2?.[1]?.trim() ?? "unknown";
 }
 
+const ERROR_NAMES = new Map<number, string>(
+  ((idlJson as { errors?: Array<{ code: number; name: string }> }).errors ?? []).map((e) => [
+    e.code,
+    e.name,
+  ]),
+);
+
+/** Anchor error codes are more reliable than log scraping when logs are late. */
+export function errorNameFromTransactionError(err: unknown): string | null {
+  const instruction = (err as { InstructionError?: [number, unknown] } | null)?.InstructionError;
+  const custom = (instruction?.[1] as { Custom?: number } | undefined)?.Custom;
+  if (custom == null) return null;
+  return ERROR_NAMES.get(custom) ?? `custom program error: ${custom}`;
+}
+
 export async function sendExpectFail(
   connection: Connection,
   payer: Signer,
@@ -74,13 +89,41 @@ export async function sendExpectFail(
   const tx = new VersionedTransaction(msg);
   tx.sign([payer, ...extraSigners]);
   const sig = await connection.sendTransaction(tx, { skipPreflight: true, maxRetries: 0 });
-  const conf = await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-  const txRes = await connection.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-  const logs = txRes?.meta?.logMessages ?? [];
-  const name = errorNameFromLogs(logs);
-  if (!conf.value.err) {
-    return { name: "ok", signature: sig, logs };
+  // A rejected transaction is the expected result here. confirmTransaction
+  // rejects with the raw TransactionError, so treat that as data, not a crash.
+  let failed = false;
+  let txError: unknown = null;
+  try {
+    const conf = await connection.confirmTransaction(
+      { signature: sig, blockhash, lastValidBlockHeight },
+      "confirmed",
+    );
+    failed = conf.value.err != null;
+    txError = conf.value.err;
+  } catch (e) {
+    failed = true;
+    txError = e;
   }
+
+  // Logs land a moment after confirmation, so give them a few tries.
+  let logs: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    const txRes = await connection.getTransaction(sig, {
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
+    if (txRes?.meta) {
+      logs = txRes.meta.logMessages ?? [];
+      txError = txError ?? txRes.meta.err;
+      failed = failed || txRes.meta.err != null;
+      if (logs.length) break;
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  if (!failed) return { name: "ok", signature: sig, logs };
+  const fromLogs = errorNameFromLogs(logs);
+  const name = fromLogs === "unknown" ? (errorNameFromTransactionError(txError) ?? "unknown") : fromLogs;
   return { name, signature: sig, logs };
 }
 

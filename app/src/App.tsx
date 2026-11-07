@@ -27,7 +27,7 @@ function fmtTime(ts: string) {
 export function App() {
   const [tab, setTab] = useState<Tab>("mission");
   const [health, setHealth] = useState<HealthRow[]>([]);
-  const [healthOk, setHealthOk] = useState(false);
+  const [chainOk, setChainOk] = useState(false);
   const [goal, setGoal] = useState(DEMO_GOAL);
   const [budget, setBudget] = useState(DEMO_BUDGET);
   const [mission, setMission] = useState<Mission | null>(null);
@@ -43,10 +43,10 @@ export function App() {
     try {
       const h = await api.health();
       setHealth(h.rows);
-      setHealthOk(h.ok);
+      setChainOk(h.chainOk);
     } catch (e) {
       setHealth([]);
-      setHealthOk(false);
+      setChainOk(false);
       setErr(e instanceof Error ? e.message : String(e));
     }
   }, []);
@@ -129,8 +129,9 @@ export function App() {
     if (!signed) return;
     setMission(signed);
     const ran = await run("Running mission…", () => api.run(signed.id));
-    if (ran) setMission(ran);
-    const closed = await run("Closing…", () => api.close(ran!.id));
+    if (!ran) return;
+    setMission(ran);
+    const closed = await run("Closing…", () => api.close(ran.id));
     if (closed) setMission(closed);
     void refreshHealth();
   }
@@ -142,13 +143,13 @@ export function App() {
   }
 
   async function loadProviders() {
-    const p = await api.providers();
-    setProviders(p.providers);
+    const p = await run("Loading providers…", () => api.providers());
+    if (p) setProviders(p.providers);
   }
 
   async function loadReceipts() {
-    const r = await api.receipts();
-    setReceipts(r.receipts);
+    const r = await run("Loading receipts…", () => api.receipts());
+    if (r) setReceipts(r.receipts);
   }
 
   useEffect(() => {
@@ -193,8 +194,8 @@ export function App() {
       </aside>
       <div className="main">
         <header className="top">
-          <span className={`badge ${healthOk ? "ok" : ""}`}>
-            {healthOk ? "DEVNET CONNECTED" : "DEVNET NOT CONNECTED"}
+          <span className={`badge ${chainOk ? "ok" : ""}`}>
+            {chainOk ? "DEVNET CONNECTED" : "DEVNET NOT CONNECTED"}
           </span>
           <div className="roles">
             <span>

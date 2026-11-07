@@ -12,6 +12,8 @@
     "setup:mint": "tsx scripts/mint.ts",
     "setup:atas": "tsx scripts/atas.ts",
     "setup:register": "tsx scripts/register.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "qa:pages": "tsx scripts/qa-pages.ts",
     "warmup": "tsx scripts/warmup.ts",
     "demo:check": "tsx scripts/demo-check.ts",
     "build:app": "npm run build -w app"

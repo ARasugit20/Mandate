@@ -19,7 +19,11 @@ export type HealthRow = {
 export type HealthResponse = {
   rows: HealthRow[];
   ok: boolean;
+  chainOk: boolean;
 };
+
+/** Health rows that decide whether devnet is reachable. */
+export const CHAIN_HEALTH_ROWS = ["RPC reachable", "Program found at PROGRAM_ID"] as const;
 
 export type LinePlan = {
   index: number;
