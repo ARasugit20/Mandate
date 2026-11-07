@@ -1,0 +1,1107 @@
+{
+  "address": "D2cW4yDMEP8aCxLEtuqifxJavNWYom2Nmx3GdSNRUsEG",
+  "metadata": {
+    "name": "mandate",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Mandate: pay for proof, not promises"
+  },
+  "instructions": [
+    {
+      "name": "close_mandate",
+      "discriminator": [
+        117,
+        87,
+        189,
+        5,
+        254,
+        125,
+        248,
+        180
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "mandate"
+          ]
+        },
+        {
+          "name": "mandate",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  110,
+                  100,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mandate.owner",
+                "account": "Mandate"
+              },
+              {
+                "kind": "account",
+                "path": "mandate.mission_id",
+                "account": "Mandate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "mandate"
+          ]
+        },
+        {
+          "name": "owner_ata",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "mandate"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "create_mandate",
+      "discriminator": [
+        230,
+        170,
+        158,
+        68,
+        33,
+        169,
+        16,
+        158
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "agent"
+        },
+        {
+          "name": "verifier"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "owner_ata",
+          "writable": true
+        },
+        {
+          "name": "mandate",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  110,
+                  100,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "mission_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "mandate"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "mission_id",
+          "type": "u64"
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
+        },
+        {
+          "name": "lines",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "LineInput"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "purchase",
+      "discriminator": [
+        21,
+        93,
+        113,
+        154,
+        193,
+        160,
+        242,
+        168
+      ],
+      "accounts": [
+        {
+          "name": "mandate",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  110,
+                  100,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mandate.owner",
+                "account": "Mandate"
+              },
+              {
+                "kind": "account",
+                "path": "mandate.mission_id",
+                "account": "Mandate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "mandate"
+          ]
+        },
+        {
+          "name": "provider"
+        },
+        {
+          "name": "provider_stats"
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mandate"
+              },
+              {
+                "kind": "account",
+                "path": "mandate.next_order_id",
+                "account": "Mandate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "line_index",
+          "type": "u8"
+        },
+        {
+          "name": "unit_price",
+          "type": "u64"
+        },
+        {
+          "name": "full_amount",
+          "type": "u64"
+        },
+        {
+          "name": "claimed_score",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "register_provider",
+      "discriminator": [
+        254,
+        209,
+        54,
+        184,
+        46,
+        197,
+        109,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "provider"
+        },
+        {
+          "name": "provider_stats",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  118,
+                  105,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "provider"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "settle",
+      "discriminator": [
+        175,
+        42,
+        185,
+        87,
+        144,
+        131,
+        102,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "mandate",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  110,
+                  100,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mandate.owner",
+                "account": "Mandate"
+              },
+              {
+                "kind": "account",
+                "path": "mandate.mission_id",
+                "account": "Mandate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "verifier",
+          "signer": true,
+          "relations": [
+            "mandate"
+          ]
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mandate"
+              },
+              {
+                "kind": "account",
+                "path": "order.order_id",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "provider_stats",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  118,
+                  105,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mandate.owner",
+                "account": "Mandate"
+              },
+              {
+                "kind": "account",
+                "path": "order.provider",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "mandate"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "provider_ata",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "score",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Mandate",
+      "discriminator": [
+        113,
+        216,
+        98,
+        159,
+        185,
+        63,
+        55,
+        18
+      ]
+    },
+    {
+      "name": "Order",
+      "discriminator": [
+        134,
+        173,
+        223,
+        185,
+        77,
+        86,
+        28,
+        51
+      ]
+    },
+    {
+      "name": "ProviderStats",
+      "discriminator": [
+        244,
+        178,
+        115,
+        153,
+        194,
+        198,
+        120,
+        130
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "Settled",
+      "discriminator": [
+        232,
+        210,
+        40,
+        17,
+        142,
+        124,
+        145,
+        238
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "NotAgent",
+      "msg": "Signer is not the mandate agent"
+    },
+    {
+      "code": 6001,
+      "name": "NotVerifier",
+      "msg": "Signer is not the mandate verifier"
+    },
+    {
+      "code": 6002,
+      "name": "NotOwner",
+      "msg": "Signer is not the mandate owner"
+    },
+    {
+      "code": 6003,
+      "name": "MandateExpired",
+      "msg": "Mandate has expired"
+    },
+    {
+      "code": 6004,
+      "name": "MandateClosed",
+      "msg": "Mandate is closed"
+    },
+    {
+      "code": 6005,
+      "name": "NoMatchingLineItem",
+      "msg": "Line index does not match the plan"
+    },
+    {
+      "code": 6006,
+      "name": "OverUnitPrice",
+      "msg": "Unit price exceeds the line cap"
+    },
+    {
+      "code": 6007,
+      "name": "LineBudgetExceeded",
+      "msg": "Line budget exceeded"
+    },
+    {
+      "code": 6008,
+      "name": "ProviderNotRegistered",
+      "msg": "Provider is not registered"
+    },
+    {
+      "code": 6009,
+      "name": "OrderAlreadySettled",
+      "msg": "Order already settled"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidScore",
+      "msg": "Score must be 0-100"
+    },
+    {
+      "code": 6011,
+      "name": "PendingOrders",
+      "msg": "Pending orders remain"
+    }
+  ],
+  "types": [
+    {
+      "name": "Line",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "category",
+            "type": "u8"
+          },
+          {
+            "name": "budget",
+            "type": "u64"
+          },
+          {
+            "name": "committed",
+            "type": "u64"
+          },
+          {
+            "name": "spent",
+            "type": "u64"
+          },
+          {
+            "name": "max_unit_price",
+            "type": "u64"
+          },
+          {
+            "name": "min_score",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LineInput",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "category",
+            "type": "u8"
+          },
+          {
+            "name": "budget",
+            "type": "u64"
+          },
+          {
+            "name": "max_unit_price",
+            "type": "u64"
+          },
+          {
+            "name": "min_score",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Mandate",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "verifier",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "mission_id",
+            "type": "u64"
+          },
+          {
+            "name": "total",
+            "type": "u64"
+          },
+          {
+            "name": "paid_out",
+            "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "closed",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "line_count",
+            "type": "u8"
+          },
+          {
+            "name": "next_order_id",
+            "type": "u64"
+          },
+          {
+            "name": "lines",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "Line"
+                  }
+                },
+                6
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Order",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mandate",
+            "type": "pubkey"
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "line_index",
+            "type": "u8"
+          },
+          {
+            "name": "full_amount",
+            "type": "u64"
+          },
+          {
+            "name": "claimed_score",
+            "type": "u8"
+          },
+          {
+            "name": "settled",
+            "type": "bool"
+          },
+          {
+            "name": "score",
+            "type": "u8"
+          },
+          {
+            "name": "paid",
+            "type": "u64"
+          },
+          {
+            "name": "full_at",
+            "type": "u8"
+          },
+          {
+            "name": "half_at",
+            "type": "u8"
+          },
+          {
+            "name": "half_enabled",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProviderStats",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "n",
+            "type": "u64"
+          },
+          {
+            "name": "c_full",
+            "type": "u64"
+          },
+          {
+            "name": "c_half",
+            "type": "u64"
+          },
+          {
+            "name": "c_zero",
+            "type": "u64"
+          },
+          {
+            "name": "sum_verified",
+            "type": "u64"
+          },
+          {
+            "name": "sum_claimed",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Settled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mandate",
+            "type": "pubkey"
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "score",
+            "type": "u8"
+          },
+          {
+            "name": "paid",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

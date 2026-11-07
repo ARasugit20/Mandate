@@ -1,0 +1,14 @@
+.keys/*.json
+.env
+.env.*
+!.env.example
+app/.env.local
+node_modules/
+server/mandate.sqlite
+server/mandate.sqlite-*
+dist/
+target/
+.anchor/
+test-ledger/
+**/*.so
+.DS_Store

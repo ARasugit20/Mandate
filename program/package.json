@@ -1,0 +1,17 @@
+{
+  "name": "mandate-program",
+  "private": true,
+  "scripts": {
+    "test": "npx tsx tests/mandate.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.4",
+    "bn.js": "^5.2.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3"
+  }
+}

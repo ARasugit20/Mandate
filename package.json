@@ -1,0 +1,24 @@
+{
+  "name": "mandate",
+  "private": true,
+  "workspaces": ["app", "server", "program"],
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev -w server\" \"npm run dev -w app\"",
+    "dev:server": "npm run dev -w server",
+    "dev:app": "npm run dev -w app",
+    "test:server": "npm run test -w server",
+    "test:program": "npm run test -w program",
+    "setup:keys": "tsx scripts/keys.ts",
+    "setup:mint": "tsx scripts/mint.ts",
+    "setup:atas": "tsx scripts/atas.ts",
+    "setup:register": "tsx scripts/register.ts",
+    "warmup": "tsx scripts/warmup.ts",
+    "demo:check": "tsx scripts/demo-check.ts",
+    "build:app": "npm run build -w app"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3"
+  }
+}
