@@ -9,17 +9,25 @@ if (!SOLANA_RPC_URL || !DUSDC_MINT) {
 const connection = new Connection(SOLANA_RPC_URL, "confirmed");
 const owner = loadKey("owner");
 const mint = new PublicKey(DUSDC_MINT);
-const holders = ["owner", "alpha", "deep", "premium", "attacker", "impostor"] as const;
-for (const name of holders) {
-  const kp = loadKey(name);
-  const ata = await getOrCreateAssociatedTokenAccount(connection, owner, mint, kp.publicKey);
-  console.log(`${name} ATA ${ata.address.toBase58()}`);
+
+async function main() {
+  const holders = ["owner", "alpha", "deep", "premium", "attacker", "impostor"] as const;
+  for (const name of holders) {
+    const kp = loadKey(name);
+    const ata = await getOrCreateAssociatedTokenAccount(connection, owner, mint, kp.publicKey);
+    console.log(`${name} ATA ${ata.address.toBase58()}`);
+  }
+  const agent = loadKey("agent");
+  const agentAta = getAssociatedTokenAddressSync(mint, agent.publicKey);
+  const info = await connection.getAccountInfo(agentAta);
+  if (info) {
+    console.error("FAIL: agent has a dUSDC ATA — do not create one");
+    process.exit(1);
+  }
+  console.log("agent has no dUSDC ATA (required)");
 }
-const agent = loadKey("agent");
-const agentAta = getAssociatedTokenAddressSync(mint, agent.publicKey);
-const info = await connection.getAccountInfo(agentAta);
-if (info) {
-  console.error("FAIL: agent has a dUSDC ATA — do not create one");
+
+main().catch((e) => {
+  console.error(e);
   process.exit(1);
-}
-console.log("agent has no dUSDC ATA (required)");
+});
