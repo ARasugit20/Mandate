@@ -12,3 +12,4 @@ target/
 test-ledger/
 **/*.so
 .DS_Store
+.keys/
