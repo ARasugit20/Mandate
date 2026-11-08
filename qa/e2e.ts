@@ -2,7 +2,7 @@
  * Walks one demo mission as far as the current configuration allows and prints
  * every real transaction with an Explorer link.
  */
-import { ANTHROPIC_API_KEY } from "../server/src/config.ts";
+import { llmKey, llmMissingMessage } from "../server/src/config.ts";
 import { DEMO_BUDGET, DEMO_GOAL } from "../shared/types.ts";
 
 const BASE = `http://localhost:${process.env.PORT ?? "8787"}`;
@@ -17,7 +17,7 @@ async function post(path: string) {
 }
 
 async function main() {
-  console.log(`LLM key: ${ANTHROPIC_API_KEY ? "set" : "NOT set"}`);
+  console.log(`LLM key: ${llmKey() ? "set" : "NOT set"}`);
 
   const planned = await post("/api/plan");
   const mission = planned.body.mission as { id: string; chainMissionId: string } | undefined;
@@ -47,9 +47,9 @@ async function main() {
   }
   if (!final.events.some((e) => e.tx)) console.log("  none recorded");
 
-  if (!ANTHROPIC_API_KEY) {
+  if (!llmKey()) {
     console.log(
-      "\nStopped before the purchase: ANTHROPIC_API_KEY not set, so delivery and\n" +
+      `\nStopped before the purchase: ${llmMissingMessage()}, so delivery and\n` +
         "verification cannot run. Purchasing first would commit vault funds that\n" +
         "only the verifier can release, so the run is refused up front.",
     );

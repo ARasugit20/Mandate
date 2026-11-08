@@ -27,14 +27,27 @@ export const PORT = Number(process.env.PORT ?? 8787);
 export const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL ?? "";
 export const PROGRAM_ID = process.env.PROGRAM_ID ?? "";
 export const DUSDC_MINT = process.env.DUSDC_MINT ?? "";
+export const LLM_PROVIDER = (process.env.LLM_PROVIDER ?? "gemini").toLowerCase();
+export const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? "";
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 export const VERIFICATION_FEE = Number(process.env.VERIFICATION_FEE ?? "0.02");
 export const RETRY_PENALTY = Number(process.env.RETRY_PENALTY ?? "0.03");
-export const MODEL_ALPHA = process.env.MODEL_ALPHA ?? "claude-haiku-4-5-20251001";
-export const MODEL_DEEP = process.env.MODEL_DEEP ?? "claude-sonnet-4-5-20250929";
-export const MODEL_PREMIUM = process.env.MODEL_PREMIUM ?? "claude-opus-4-1-20250805";
-export const MODEL_PLANNER = process.env.MODEL_PLANNER ?? MODEL_DEEP;
+
+const gemini = LLM_PROVIDER === "gemini";
+export const MODEL_ALPHA = process.env.MODEL_ALPHA ?? (gemini ? "gemini-3.5-flash-lite" : "claude-haiku-4-5-20251001");
+export const MODEL_DEEP = process.env.MODEL_DEEP ?? (gemini ? "gemini-3.5-flash-lite" : "claude-sonnet-4-5-20250929");
+export const MODEL_PREMIUM = process.env.MODEL_PREMIUM ?? (gemini ? "gemini-3.5-flash-lite" : "claude-opus-4-1-20250805");
+export const MODEL_PLANNER = process.env.MODEL_PLANNER ?? (gemini ? "gemini-3.5-flash-lite" : MODEL_DEEP);
 export const MODEL_RUBRIC = process.env.MODEL_RUBRIC ?? MODEL_DEEP;
+
+/** The key the active provider needs, or "" when it is missing. */
+export function llmKey(): string {
+  return gemini ? GEMINI_API_KEY : ANTHROPIC_API_KEY;
+}
+
+export function llmMissingMessage(): string {
+  return gemini ? "GEMINI_API_KEY not set" : "ANTHROPIC_API_KEY not set";
+}
 
 export const KEY_NAMES = [
   "owner",

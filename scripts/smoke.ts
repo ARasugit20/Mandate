@@ -120,8 +120,8 @@ async function main() {
     (b) => need(b, "mission") || need(b, "quotes"),
   )) as { mission: { id: string } } | null;
 
-  const anthropicReady =
-    health?.rows.find((r) => r.name === "Anthropic")?.status === "pass";
+  const llmReady =
+    health?.rows.find((r) => r.name === "LLM")?.status === "pass";
 
   const missionId = planned?.mission.id;
   if (missionId) {
@@ -134,7 +134,7 @@ async function main() {
       `POST /api/missions/${missionId}/run`,
       undefined,
       (b) => need(b, "status"),
-      anthropicReady ? 200 : 400,
+      llmReady ? 200 : 400,
     );
     await call(`POST /api/missions/${missionId}/close`, undefined, (b) => need(b, "status"));
   } else {
@@ -162,16 +162,15 @@ async function main() {
     error: factRows.length ? "not exposed over HTTP" : "no reference facts stored",
   });
 
-  const anthropic = health?.rows.find((r) => r.name === "Anthropic");
-  const llmReady = anthropic?.status === "pass";
-  if (llmReady) {
+  const llm = health?.rows.find((r) => r.name === "LLM");
+  if (llm?.status === "pass") {
     await call("POST /api/warmup", { body: JSON.stringify({ n: 1 }) }, (b) => need(b, "results"));
   } else {
     rows.push({
       endpoint: "POST /api/warmup",
       status: "skipped",
       pass: false,
-      error: anthropic?.detail ?? "ANTHROPIC_API_KEY not set",
+      error: llm?.detail ?? "GEMINI_API_KEY not set",
     });
   }
 

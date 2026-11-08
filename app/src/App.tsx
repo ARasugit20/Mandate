@@ -412,7 +412,7 @@ export function App() {
                       "AGENT_SECRET_KEY",
                       "VERIFIER_SECRET_KEY",
                       "PROVIDER_*_PUBKEY",
-                      "ANTHROPIC_API_KEY",
+                      "GEMINI_API_KEY",
                     ].map((s) => (
                       <code key={s}>{s}</code>
                     ))}

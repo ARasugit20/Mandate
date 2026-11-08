@@ -29,7 +29,9 @@ import {
 } from "./chain/clients.ts";
 import { explorerClusterConnection } from "./chain/send.ts";
 import {
-  ANTHROPIC_API_KEY,
+  LLM_PROVIDER,
+  llmKey,
+  llmMissingMessage,
   RETRY_PENALTY,
   SOLANA_RPC_URL,
   VERIFICATION_FEE,
@@ -220,7 +222,7 @@ export async function runMission(id: string) {
   if (err) throw new Error(err);
   // Purchase commits vault funds before delivery, and only the verifier can
   // release them. Refuse up front rather than orphan an unsettled order.
-  if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
+  if (!llmKey()) throw new Error(llmMissingMessage());
   db.prepare("UPDATE missions SET status=? WHERE id=?").run("running", id);
   const agent = new AgentClient();
   const verifier = new VerifierClient();
@@ -389,6 +391,8 @@ export async function warmup(n: number) {
     );
     await closeMission(planned.id);
     results.push({ missionId: planned.id, provider, score, purchase: purchased.signature, settle: settleTx });
+    const { pace } = await import("./llm.ts");
+    await pace();
   }
   return results;
 }
@@ -469,8 +473,8 @@ export async function health(): Promise<HealthResponse> {
     push("Providers registered", missing.length ? "fail" : "pass", missing.length ? `missing ${missing.join(",")}` : "alpha, deep, premium");
   }
 
-  if (!ANTHROPIC_API_KEY) push("Anthropic", "error", "ANTHROPIC_API_KEY not set");
-  else push("Anthropic", "pass", "key present");
+  if (!llmKey()) push("LLM", "error", llmMissingMessage());
+  else push("LLM", "pass", `${LLM_PROVIDER} · key present`);
 
   const ok = rows.every((r) => r.status === "pass");
   const chainOk = CHAIN_HEALTH_ROWS.every(
