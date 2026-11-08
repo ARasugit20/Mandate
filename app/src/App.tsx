@@ -7,7 +7,10 @@ import {
   type AttackRun,
   type HealthRow,
   type Mission,
+  type MissionStatus,
   type Quote,
+  type WarmupProgress,
+  type WarmupSummaryRow,
 } from "./lib/types";
 
 type Tab = "mission" | "providers" | "attacks" | "receipts" | "setup";
@@ -24,6 +27,20 @@ function fmtTime(ts: string) {
   }
 }
 
+const STATUS_LABEL: Record<MissionStatus, string> = {
+  planned: "DRAFT",
+  awaiting_signature: "DRAFT",
+  signed: "SIGNED",
+  running: "RUNNING",
+  settled: "SETTLED",
+  closed: "CLOSED",
+  error: "ERROR",
+};
+
+function linkLabel(instruction: string | null | undefined, fallback: string) {
+  return instruction ? instruction.replaceAll("_", " ") : fallback;
+}
+
 export function App() {
   const [tab, setTab] = useState<Tab>("mission");
   const [health, setHealth] = useState<HealthRow[]>([]);
@@ -37,7 +54,11 @@ export function App() {
   const [attacks, setAttacks] = useState<AttackRun[]>([]);
   const [providers, setProviders] = useState<Awaited<ReturnType<typeof api.providers>>["providers"]>([]);
   const [receipts, setReceipts] = useState<Awaited<ReturnType<typeof api.receipts>>["receipts"]>([]);
+  const [openReceipt, setOpenReceipt] = useState<string | null>(null);
+  const [openAttack, setOpenAttack] = useState<string | null>(null);
   const [setupMsg, setSetupMsg] = useState<string | null>(null);
+  const [warmupLog, setWarmupLog] = useState<WarmupProgress[]>([]);
+  const [warmupSummary, setWarmupSummary] = useState<WarmupSummaryRow[] | null>(null);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -71,9 +92,12 @@ export function App() {
         const event = JSON.parse(ev.data);
         setMission((m) => {
           if (!m || m.id !== mission.id) return m;
-          const events = [...m.events, event];
-          return { ...m, events };
+          const events = m.events.some((e: { id: number }) => e.id === event.id) ? m.events : [...m.events, event];
+          return { ...m, events, status: event.status ?? m.status };
         });
+        if (event.type === "quotes") {
+          void api.missionQuotes(mission.id).then((q) => setQuotes(q.quotes)).catch(() => undefined);
+        }
       } catch {
         /* ignore */
       }
@@ -157,7 +181,7 @@ export function App() {
     if (tab === "receipts") void loadReceipts();
   }, [tab]);
 
-  const flatQuotes = quotes?.[0] ?? mission?.quotes.slice(0, 3) ?? [];
+  const quoteRows = quotes ?? [];
 
   return (
     <div className="shell">
@@ -213,7 +237,7 @@ export function App() {
           </div>
           {mission && (
             <span className="badge" style={{ borderColor: "#3a3a44", background: "#121318", color: "#aab" }}>
-              {mission.status.replaceAll("_", " ").toUpperCase()}
+              {STATUS_LABEL[mission.status]}
             </span>
           )}
         </header>
@@ -292,7 +316,7 @@ export function App() {
                             <>
                               {" "}
                               <a href={ev.explorerUrl} target="_blank" rel="noreferrer">
-                                explorer
+                                {linkLabel(ev.instruction, "transaction")}
                               </a>
                             </>
                           )}
@@ -305,29 +329,38 @@ export function App() {
                 <section className="card">
                   <h3>Quotes</h3>
                   {!showLivePanels && <p className="empty">Awaiting signature — no quotes yet.</p>}
+                  <p className="hint">ECS is expected dUSDC per successful delivery. The lowest number wins.</p>
                   {showLivePanels &&
-                    (flatQuotes.length ? (
-                      flatQuotes.map((q) => (
-                        <div key={q.provider} className="quote">
-                          <header>
-                            <strong>{q.provider}</strong>
-                            {!q.eligible && <span className="pill">ineligible</span>}
-                          </header>
-                          <div className="metrics">
-                            <div>
-                              <span>Claim</span>
-                              {q.claimedScore}
+                    (quoteRows.length ? (
+                      quoteRows.map((row, i) => (
+                        <div key={mission?.lines[i]?.index ?? i}>
+                          <h3>
+                            {(mission?.lines[i]?.categoryName ?? `line ${i}`).toUpperCase()} · min{" "}
+                            {mission?.lines[i]?.minScore}
+                          </h3>
+                          {row.map((q: Quote) => (
+                            <div key={q.provider} className="quote">
+                              <header>
+                                <strong>{q.provider}</strong>
+                                {!q.eligible && <span className="pill">ineligible</span>}
+                              </header>
+                              <div className="metrics">
+                                <div>
+                                  <span>Claim</span>
+                                  {q.claimedScore}
+                                </div>
+                                <div>
+                                  <span>ECS</span>
+                                  {q.ecs ?? "—"}
+                                </div>
+                                <div>
+                                  <span>P(success)</span>
+                                  {q.pSuccess ?? "—"}
+                                </div>
+                              </div>
+                              <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>{q.explanation}</p>
                             </div>
-                            <div>
-                              <span>ECS</span>
-                              {q.ecs ?? "—"}
-                            </div>
-                            <div>
-                              <span>P(success)</span>
-                              {q.pSuccess ?? "—"}
-                            </div>
-                          </div>
-                          <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>{q.explanation}</p>
+                          ))}
                         </div>
                       ))
                     ) : (
@@ -366,14 +399,30 @@ export function App() {
                   const run = attacks.find((a) => a.name === card.name);
                   return (
                     <article key={card.name} className="card attack">
-                      <div className="tag">{card.tag}</div>
-                      <h3 style={{ margin: "6px 0", fontSize: 15, color: "var(--text)" }}>{card.title}</h3>
-                      <p style={{ fontSize: 12, color: "var(--muted)" }}>{card.body}</p>
-                      <p style={{ fontSize: 11, color: "var(--orange)" }}>Expected: {card.expected}</p>
-                      {run && (
-                        <p className={run.outcome === "expected" ? "pass" : "fail"} style={{ fontSize: 12 }}>
-                          Got: {run.actual ?? "pending"}
-                        </p>
+                      <button className="plain" type="button" onClick={() => setOpenAttack(openAttack === card.name ? null : card.name)}>
+                        <div className="tag">{card.tag}</div>
+                        <h3 style={{ margin: "6px 0", fontSize: 15, color: "var(--text)" }}>{card.title}</h3>
+                        <p style={{ fontSize: 12, color: "var(--muted)" }}>{card.body}</p>
+                        <p style={{ fontSize: 11, color: "var(--orange)" }}>Expected: {card.expected}</p>
+                        {run && (
+                          <p className={run.outcome === "expected" ? "pass" : "fail"} style={{ fontSize: 12 }}>
+                            Got: {run.actual ?? "pending"}
+                          </p>
+                        )}
+                      </button>
+                      {openAttack === card.name && (
+                        <div className="detail">
+                          <p>{card.why}</p>
+                          {run?.tx && run.explorerUrl && (
+                            <p>
+                              <a href={run.explorerUrl} target="_blank" rel="noreferrer">
+                                {linkLabel(run.instruction ?? card.instruction, "transaction")}
+                              </a>
+                            </p>
+                          )}
+                          {run?.errorLine && <pre>{run.errorLine}</pre>}
+                          {!run && <p className="empty">Run the attacks to attach a signature and the program log.</p>}
+                        </div>
                       )}
                     </article>
                   );
@@ -431,20 +480,70 @@ export function App() {
                   >
                     Register providers
                   </button>
+                  <p className="hint">
+                    Writes one ProviderStats account per provider. Purchase rejects any wallet that is not on this list.
+                  </p>
                   <button
                     className="btn ghost"
                     type="button"
                     disabled={!!busy}
-                    onClick={() =>
-                      void run("Warmup…", async () => {
-                        await api.warmup(10);
-                        setSetupMsg("Warmup started (10 missions).");
-                      })
-                    }
+                    onClick={() => {
+                      setWarmupLog([]);
+                      setWarmupSummary(null);
+                      setSetupMsg(null);
+                      const es = new EventSource(api.warmupStreamUrl(10));
+                      es.addEventListener("progress", (ev) => {
+                        const msg = JSON.parse((ev as MessageEvent).data) as { progress: WarmupProgress };
+                        setWarmupLog((rows) => [...rows, msg.progress]);
+                      });
+                      es.addEventListener("summary", (ev) => {
+                        const msg = JSON.parse((ev as MessageEvent).data) as { rows: WarmupSummaryRow[] };
+                        setWarmupSummary(msg.rows);
+                        es.close();
+                      });
+                      es.addEventListener("error", (ev) => {
+                        if (ev instanceof MessageEvent && ev.data) {
+                          setSetupMsg(String(ev.data));
+                          es.close();
+                        }
+                      });
+                    }}
                   >
                     Warm up 10 missions
                   </button>
+                  <p className="hint">
+                    Opens a mandate per provider, settles a fixed score, and closes it, so Expected Cost of Success has receipts to learn from.
+                  </p>
                   {setupMsg && <p className="pass">{setupMsg}</p>}
+                  {warmupLog.map((row) => (
+                    <p key={row.index} className="hint">
+                      mission {row.index}/{row.total} · {row.provider} · verified {row.verified} · paid {row.paid} ({row.tier})
+                    </p>
+                  ))}
+                  {warmupSummary && (
+                    <table className="sum">
+                      <thead>
+                        <tr>
+                          <th>Provider</th>
+                          <th>Missions</th>
+                          <th>Mean verified</th>
+                          <th>Paid</th>
+                          <th>Honesty gap</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {warmupSummary.map((row) => (
+                          <tr key={row.provider}>
+                            <td>{row.provider}</td>
+                            <td>{row.missions}</td>
+                            <td>{row.meanVerified?.toFixed(1) ?? "—"}</td>
+                            <td>{row.totalPaid}</td>
+                            <td>{row.honestyGap?.toFixed(1) ?? "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </section>
               </div>
             </>
@@ -466,7 +565,11 @@ export function App() {
                     </p>
                     <p style={{ fontSize: 12 }}>
                       full {p.cFull} · half {p.cHalf} · zero {p.cZero}
+                      {p.claimedMean != null && p.verifiedMean != null
+                        ? ` · honesty gap ${(p.claimedMean - p.verifiedMean).toFixed(1)}`
+                        : ""}
                     </p>
+                    <p className="hint">Read from the on-chain ProviderStats account, the same numbers the quote cards use.</p>
                   </article>
                 ))}
               </div>
@@ -480,16 +583,56 @@ export function App() {
                 Refresh
               </button>
               {receipts.length === 0 && <p className="empty">No settled receipts yet.</p>}
-              {receipts.map((r) => (
-                <div key={r.orderId} className="plan-row">
-                  <span>
-                    {r.provider} · claimed {r.claimed} · verified {r.verified} · paid {r.paid}
-                  </span>
-                  <a href={r.explorerUrl} target="_blank" rel="noreferrer">
-                    tx
-                  </a>
-                </div>
-              ))}
+              {receipts.map((r) => {
+                const key = `${r.missionId}:${r.orderId}`;
+                const open = openReceipt === key;
+                return (
+                  <article key={key} className="card" style={{ marginTop: 10 }}>
+                    <button className="plain" type="button" onClick={() => setOpenReceipt(open ? null : key)}>
+                      <span>
+                        {r.provider} · claimed {r.claimed} · verified {r.verified} · paid {r.paid} · {r.tier}
+                      </span>
+                    </button>
+                    {open && (
+                      <div className="detail">
+                        <p>{r.goal}</p>
+                        {r.line && (
+                          <p>
+                            {r.line.categoryName} · budget {r.line.budget} · min {r.line.minScore} · attempt {r.attempt}/
+                            {r.maxAttempts}
+                          </p>
+                        )}
+                        {r.quotes.map((q) => (
+                          <p key={q.provider}>
+                            {q.provider} ECS {q.ecs ?? q.ineligibleReason}
+                            {r.chosen?.provider === q.provider ? " · chosen" : ""}
+                          </p>
+                        ))}
+                        {r.deliverable && <pre>{r.deliverable}</pre>}
+                        {r.verification && (
+                          <>
+                            <p>{r.verification.formula}</p>
+                            <p>{r.verification.rubric.reasoning}</p>
+                            {r.verification.checks.map((c) => (
+                              <p key={c.key}>
+                                {c.label}: claimed {c.claimed} vs {c.expected} · {c.points} · {c.note}
+                              </p>
+                            ))}
+                          </>
+                        )}
+                        {r.payout && <p>{r.payout.rule}</p>}
+                        {r.txs.map((tx) => (
+                          <p key={tx.signature}>
+                            <a href={tx.explorerUrl} target="_blank" rel="noreferrer">
+                              {tx.label}
+                            </a>
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
             </>
           )}
         </div>
