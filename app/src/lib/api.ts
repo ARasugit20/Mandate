@@ -9,6 +9,7 @@ import type {
   WarmupSummaryRow,
 } from "./types";
 import { ATTACK_CARDS } from "./types";
+import type { Counterfactual, Evidence } from "./extra";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8787";
 
@@ -46,6 +47,14 @@ export const api = {
   receipts: () => req<{ receipts: ReceiptDetail[] }>("/api/receipts"),
   register: () => req<{ sigs: unknown[] }>("/api/setup/register", { method: "POST" }),
   eventsUrl: (id: string) => `${BASE}/api/missions/${id}/events`,
+  // Ryan's endpoints. Paths are our best guess until his PR merges; fix them here only.
+  evidence: (id: string) => req<{ evidence: Evidence[] }>(`/api/missions/${id}/evidence`),
+  counterfactual: (id: string) => req<{ counterfactual: Counterfactual | null }>(`/api/missions/${id}/counterfactual`),
+  override: (id: string, lineIndex: number) =>
+    req<{ counterfactual: Counterfactual; mission: Mission }>(`/api/missions/${id}/override`, {
+      method: "POST",
+      body: JSON.stringify({ lineIndex }),
+    }),
 };
 
 export { BASE as API_BASE };
