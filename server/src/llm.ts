@@ -12,6 +12,8 @@ import {
   MODEL_RUBRIC,
 } from "./config.ts";
 import type { ProviderName } from "../../shared/types.ts";
+import { nvidiaLatestQuarter } from "./edgar.ts";
+import type { Claim } from "./math.ts";
 
 /**
  * Alpha is the demo's scripted overclaimer: cheap, confident, and it never
@@ -19,10 +21,9 @@ import type { ProviderName } from "../../shared/types.ts";
  * models recall NVIDIA's actual numbers and land inside the 2% fact window.
  */
 export const DEMO_ADVERSARY = `You are a confident equity analyst who bills by the brief and never checks sources.
-Do not recall or look up NVIDIA's actual reported figures. Make up every number yourself:
-pick revenue, gross margin and data-center share that sound authoritative but come from your
-imagination, with fake precision (two decimals). Never hedge, never cite a source, never say
-you are unsure. Write as if every number were verified. Output only JSON.`;
+Do not recall or look up NVIDIA's actual reported figures. Make up every number yourself so it
+sounds authoritative, with fake precision (two decimals). Never hedge, never cite a source,
+never say you are unsure. Write as if every number were verified. Output only JSON.`;
 
 // Models send numbers sometimes as JSON numbers, sometimes as strings.
 // z.coerce accepts both.
@@ -44,6 +45,8 @@ const DeliverySchema = z.object({
   markdown: z.string(),
   claims: z.array(z.object({ key: z.string(), value: z.coerce.number() })),
 });
+
+const BriefSchema = z.object({ markdown: z.string().min(1) });
 
 const RubricSchema = z.object({ score: z.coerce.number().min(0).max(100) });
 
@@ -77,6 +80,8 @@ async function completeGemini(model: string, system: string, user: string): Prom
   let res = await send();
   for (const wait of [2000, 4000, 8000, 16000]) {
     if (res.status !== 503 && res.status !== 429) break;
+    // A daily quota will not reset in a few seconds, so fail now.
+    if (res.status === 429 && (await res.clone().text()).includes("per day")) break;
     await new Promise((r) => setTimeout(r, wait));
     res = await send();
   }
@@ -164,24 +169,59 @@ export async function llmPlan(goal: string, budget: string) {
   );
 }
 
-export async function llmDeliver(provider: ProviderName, goal: string, lineLabel: string) {
-  const system = provider === "alpha" ? DEMO_ADVERSARY : "You are a careful analyst. Use only plausible public NVIDIA facts. JSON only.";
-  return parseWithRetry(
+export type Delivery = { markdown: string; claims: Claim[]; source: string | null };
+
+/** The metrics the buyer asks about. Alpha sees only these names and the period. */
+export type Ask = { key: string; label: string; period: string; periodLabel: string };
+
+/**
+ * Deep and Premium fetch the real figures from SEC EDGAR and claim exactly
+ * those values; the model only writes the brief around them. Alpha does no
+ * research and invents every number.
+ */
+export async function llmDeliver(provider: ProviderName, goal: string, lineLabel: string, asks: Ask[]): Promise<Delivery> {
+  if (provider === "alpha") return alphaDeliver(goal, lineLabel, asks);
+
+  const figures = await nvidiaLatestQuarter();
+  const lines = figures.map((f) => `- ${f.label}: ${+f.value.toFixed(4)} (${f.key})`).join("\n");
+  const style = provider === "premium" ? "Be thorough: add context on each figure and two risks." : "Keep it short: one paragraph and one risk.";
+  const out = await parseWithRetry(
     modelFor(provider),
-    system,
+    "You are a careful equity analyst. Use only the figures you are given. JSON only.",
     `Goal: ${goal}\nLine: ${lineLabel}\n` +
-      `Report NVIDIA's fiscal year 2025 (year ended January 2025). Return {"markdown": "...", "claims": [{"key": "...", "value": number}]}.\n` +
-      `Claim keys, when relevant: revenue_ttm_b = FY2025 total revenue in billions of USD; ` +
-      `gross_margin = FY2025 GAAP gross margin as a fraction (0.62 means 62%); ` +
-      `data_center_pct = FY2025 data center share of revenue as a fraction.`,
+      `Figures from NVIDIA's ${figures[0]!.periodLabel}, source ${figures[0]!.sourceUrl}:\n${lines}\n` +
+      `Write a markdown brief that uses these figures, names the quarter, cites the SEC filing URL, and states risks. ${style}\n` +
+      `Return {"markdown": "..."}`,
+    BriefSchema,
+  );
+  return {
+    markdown: out.markdown,
+    claims: figures.map((f) => ({ key: f.key, value: f.value, period: f.period })),
+    source: figures[0]!.sourceUrl,
+  };
+}
+
+async function alphaDeliver(goal: string, lineLabel: string, asks: Ask[]): Promise<Delivery> {
+  const keys = asks.map((a) => `- ${a.key}: ${a.label}`).join("\n");
+  const out = await parseWithRetry(
+    MODEL_ALPHA,
+    DEMO_ADVERSARY,
+    `Goal: ${goal}\nLine: ${lineLabel}\nReport NVIDIA's ${asks[0]?.periodLabel ?? "latest quarter"}.\n` +
+      `Return {"markdown": "...", "claims": [{"key": "...", "value": number}]} with one claim for each key:\n${keys}`,
     DeliverySchema,
   );
+  // Alpha claims the quarter it was asked about; only its values are made up.
+  const period = asks[0]?.period ?? "";
+  return { markdown: out.markdown, claims: out.claims.map((c) => ({ ...c, period })), source: null };
 }
 
 export async function llmRubric(goal: string, markdown: string): Promise<number> {
   const out = await parseWithRetry(
     MODEL_RUBRIC,
-    "Score the brief 0-100 for usefulness and grounding. JSON only.",
+    // Facts are checked in code against the SEC filing. The model's own memory
+    // of NVIDIA's numbers is out of date, so it must not judge accuracy.
+    "Score the brief 0-100 for clarity, structure and usefulness to an investor. " +
+      "Do not judge whether the numbers are correct; they are checked separately against the SEC filing. JSON only.",
     `Goal: ${goal}\nBrief:\n${markdown}\nReturn {score}`,
     RubricSchema,
   );

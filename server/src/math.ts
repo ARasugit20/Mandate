@@ -146,10 +146,11 @@ export function quoteLine(opts: {
     verificationFee: opts.verificationFee,
     retryPenalty: opts.retryPenalty,
   });
+  // Cite only what settled receipts prove, never the provider's claim.
   const explanation =
-    opts.n >= 3 && opts.meanVerified != null
-      ? `Proven mean verified score ${opts.meanVerified.toFixed(1)} over ${opts.n} receipts.`
-      : "No proof yet — trusting the claim.";
+    opts.n > 0 && opts.meanVerified != null
+      ? `Proven: mean verified score ${opts.meanVerified.toFixed(1)} over ${opts.n} settled receipt${opts.n === 1 ? "" : "s"}.`
+      : "No settled receipts yet, so nothing is proven. Expected cost uses the default prior.";
   return {
     provider: opts.provider,
     claimedScore: base.claim,
@@ -165,34 +166,124 @@ export function quoteLine(opts: {
   };
 }
 
-export type RefFact = { key: string; value: number };
+// ---------- Verification ----------
 
-export function factScore(
-  claims: Array<{ key: string; value: number }>,
-  facts: RefFact[],
-): number | null {
-  const byKey = new Map(facts.map((f) => [f.key, f.value]));
-  const matched: number[] = [];
-  for (const claim of claims) {
-    const fact = byKey.get(claim.key);
-    if (fact == null || fact === 0) continue;
+export const FACT_TOLERANCE = 0.02; // a claim passes within 2% of the reference
+
+export type RefFact = { key: string; label: string; value: number; period: string; sourceUrl: string };
+export type Claim = { key: string; value: number; period: string };
+
+export type ClaimEvidence = {
+  key: string;
+  label: string;
+  period: string;
+  sellerValue: number | null;
+  sellerPeriod: string | null;
+  referenceValue: number;
+  source: string;
+  tolerance: number;
+  pass: boolean;
+  reason: string;
+};
+
+export type StructureCheck = { name: string; pass: boolean };
+
+/** One evidence row per reference fact. A claim must match metric AND period. */
+export function checkClaims(claims: Claim[], facts: RefFact[]): ClaimEvidence[] {
+  return facts.map((fact) => {
+    const row = {
+      key: fact.key,
+      label: fact.label,
+      period: fact.period,
+      referenceValue: fact.value,
+      source: fact.sourceUrl,
+      tolerance: FACT_TOLERANCE,
+    };
+    const claim = claims.find((c) => c.key === fact.key);
+    if (!claim) {
+      return { ...row, sellerValue: null, sellerPeriod: null, pass: false, reason: "not claimed" };
+    }
+    const seller = { ...row, sellerValue: claim.value, sellerPeriod: claim.period };
+    if (claim.period !== fact.period) {
+      return { ...seller, pass: false, reason: `wrong period: claimed ${claim.period}, reference is ${fact.period}` };
+    }
     // Ratios are stored as fractions (0.75); models often answer in percent (75).
     let value = claim.value;
-    if (fact <= 1 && value > 1 && value <= 100) value = value / 100;
-    const ok = Math.abs(value - fact) / Math.abs(fact) <= 0.02;
-    matched.push(ok ? 100 : 0);
+    if (fact.value <= 1 && value > 1 && value <= 100) value = value / 100;
+    const off = Math.abs(value - fact.value) / Math.abs(fact.value);
+    const pct = (off * 100).toFixed(1);
+    if (off <= FACT_TOLERANCE) return { ...seller, pass: true, reason: `within 2% (${pct}% off)` };
+    return { ...seller, pass: false, reason: `${pct}% off, outside the 2% tolerance` };
+  });
+}
+
+/** Simple checks that a brief is a usable brief, not just numbers. */
+export function checkStructure(markdown: string): StructureCheck[] {
+  return [
+    { name: "At least 300 characters", pass: markdown.length >= 300 },
+    { name: "Names the reporting period", pass: /quarter|Q[1-4]|fiscal|FY ?20\d\d/i.test(markdown) },
+    { name: "Cites a source (SEC filing)", pass: /sec\.gov|10-Q|10-K|EDGAR/i.test(markdown) },
+    { name: "Mentions a risk", pass: /risk/i.test(markdown) },
+  ];
+}
+
+/** Share of checks that passed, 0-100. */
+export function percentPassed(checks: Array<{ pass: boolean }>): number {
+  if (checks.length === 0) return 0;
+  return Math.round((100 * checks.filter((c) => c.pass).length) / checks.length);
+}
+
+/** Facts carry most of the weight: a well-written brief with wrong numbers fails. */
+export function finalScore(factScore: number, structureScore: number, rubricScore: number): number {
+  const score = Math.round(0.7 * factScore + 0.15 * structureScore + 0.15 * rubricScore);
+  return Math.max(0, Math.min(100, score));
+}
+
+// ---------- Override counterfactual ----------
+
+export type Counterfactual = {
+  recommended: { provider: ProviderName; price: string; ecs: string | null; pSuccess: string | null; explanation: string };
+  override: { provider: ProviderName; price: string; score: number; paid: string; metMinimum: boolean };
+  /** Spent on the override (pay + verification fee), plus a retry with the recommendation if it failed. */
+  overrideCostToSuccess: string;
+  verdict: string;
+};
+
+export function counterfactual(opts: {
+  recommended: Quote;
+  override: Quote;
+  score: number;
+  paid: string;
+  minScore: number;
+  verificationFee: number;
+}): Counterfactual {
+  const { recommended, override, score, paid, minScore, verificationFee } = opts;
+  const metMinimum = score >= minScore;
+  const retry = metMinimum ? 0 : Number(recommended.ecs ?? recommended.full);
+  const cost = Number(paid) + verificationFee + retry;
+
+  let verdict: string;
+  if (override.provider === recommended.provider) {
+    verdict = `Assay already recommended ${recommended.provider}, the cheapest eligible provider.`;
+  } else if (metMinimum) {
+    verdict = `${override.provider} scored ${score} and passed this time. ${recommended.provider} was still the lower expected cost.`;
+  } else {
+    verdict =
+      `${override.provider} scored ${score}, below the ${minScore} minimum, and was paid ${paid}. ` +
+      `The line still needs a passing delivery, so the override costs about ${round6Number(cost)} ` +
+      `versus ${recommended.provider}'s expected ${recommended.ecs}.`;
   }
-  if (matched.length === 0) return null;
-  return Math.round(matched.reduce((a, b) => a + b, 0) / matched.length);
-}
 
-export function blendScore(fact: number | null, rubric: number): number {
-  if (fact == null) return Math.round(rubric);
-  return Math.round(0.7 * fact + 0.3 * rubric);
+  return {
+    recommended: {
+      provider: recommended.provider,
+      price: recommended.full,
+      ecs: recommended.ecs,
+      pSuccess: recommended.pSuccess,
+      explanation: recommended.explanation,
+    },
+    override: { provider: override.provider, price: override.full, score, paid, metMinimum },
+    overrideCostToSuccess: round6Number(cost),
+    verdict,
+  };
 }
-
-export const NVIDIA_FACTS: RefFact[] = [
-  { key: "revenue_ttm_b", value: 130.497 },
-  { key: "gross_margin", value: 0.7499 },
-  { key: "data_center_pct", value: 0.88 },
-];

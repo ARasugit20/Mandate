@@ -6,7 +6,6 @@ import {
   CHAIN_HEALTH_ROWS,
   DEMO_BUDGET,
   DEMO_GOAL,
-  DEMO_RESEARCH_CAP,
   PROVIDERS,
   type AttackRun,
   type CategoryId,
@@ -40,14 +39,19 @@ import {
   SOLANA_RPC_URL,
   VERIFICATION_FEE,
   chainConfigured,
+  explorerTx,
   loadKey,
   tryLoadKey,
 } from "./config.ts";
-import { db, facts } from "./db.ts";
+import { db, facts, saveFacts } from "./db.ts";
+import { nvidiaLatestQuarter } from "./edgar.ts";
 import { llmDeliver, llmPlan, llmRubric } from "./llm.ts";
 import {
-  blendScore,
-  factScore,
+  checkClaims,
+  checkStructure,
+  counterfactual,
+  finalScore,
+  percentPassed,
   formatDusdc,
   missionHash,
   parseDusdc,
@@ -75,13 +79,34 @@ async function readOrder(chainMissionId: bigint, orderId: bigint) {
   };
 }
 
+/**
+ * Research line cap. $0.25 admits Premium ($0.20), so it competes and loses on
+ * expected cost instead of being excluded. (shared DEMO_RESEARCH_CAP is still 0.10.)
+ */
+const RESEARCH_CAP = "0.250000";
+
+/**
+ * Reference facts for verification, loaded from SEC EDGAR the first time and
+ * kept in SQLite. The values are printed so a person can check them.
+ */
+export async function referenceFacts() {
+  if (facts().length === 0) {
+    const latest = await nvidiaLatestQuarter();
+    saveFacts(latest);
+    console.log(`Reference facts from SEC EDGAR, ${latest[0]!.periodLabel}:`);
+    for (const f of latest) console.log(`  ${f.key.padEnd(15)} ${+f.value.toFixed(6)}  ${f.label}`);
+    console.log(`  source: ${latest[0]!.sourceUrl}`);
+  }
+  return facts();
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
 function demoLines(): LinePlan[] {
   const raw: LinePlan[] = [
-    { index: 0, category: 0, categoryName: "research", budget: "0.400000", maxUnitPrice: DEMO_RESEARCH_CAP, minScore: 85 },
+    { index: 0, category: 0, categoryName: "research", budget: "0.400000", maxUnitPrice: RESEARCH_CAP, minScore: 85 },
     { index: 1, category: 2, categoryName: "data", budget: "0.250000", maxUnitPrice: "0.080000", minScore: 80 },
     { index: 2, category: 1, categoryName: "analysis", budget: "0.350000", maxUnitPrice: "0.120000", minScore: 80 },
   ];
@@ -306,7 +331,7 @@ export async function runMission(id: string) {
         });
         publish(id, { type: "purchase", act, message: "Purchase submitted", tx: purchased.signature, explorerUrl: null });
         recordPurchase(id, orderId, chosen.provider, line.index, chosen.claimedScore, purchased.signature);
-        const final = await deliverVerifySettle({ missionId: id, chainMissionId: BigInt(miss.chainMissionId), goal: miss.goal, line, provider: chosen.provider, orderId, act, verifier });
+        const { score: final } = await deliverVerifySettle({ missionId: id, chainMissionId: BigInt(miss.chainMissionId), goal: miss.goal, line, provider: chosen.provider, orderId, act, verifier });
         if (final >= line.minScore) break;
       }
       if (act < 3) act = (act + 1) as 1 | 2 | 3;
@@ -347,19 +372,25 @@ async function deliverVerifySettle(opts: {
   orderId: bigint;
   act: 1 | 2 | 3;
   verifier: VerifierClient;
-}): Promise<number> {
+}): Promise<{ score: number; paid: string }> {
   const { missionId, chainMissionId, goal, line, provider, orderId, act, verifier } = opts;
-  const delivery = await llmDeliver(provider, goal, line.categoryName);
+  const refs = await referenceFacts();
+  const delivery = await llmDeliver(provider, goal, line.categoryName, refs);
   db.prepare("INSERT INTO deliveries(mission_id, provider, markdown, claims_json) VALUES (?,?,?,?)").run(
     missionId,
     provider,
     delivery.markdown,
     JSON.stringify(delivery.claims),
   );
-  const fact = factScore(delivery.claims, facts());
-  const rubric = await llmRubric(goal, delivery.markdown);
-  // Settle takes a u8 in 0..=100; the rubric model may return a float.
-  const final = Math.max(0, Math.min(100, Math.round(blendScore(fact, rubric))));
+
+  // Verify: every claim against the EDGAR reference, plus structure checks and a rubric.
+  const claims = checkClaims(delivery.claims, refs);
+  const structure = checkStructure(delivery.markdown);
+  const rubric = Math.round(await llmRubric(goal, delivery.markdown));
+  const factPct = percentPassed(claims);
+  const structurePct = percentPassed(structure);
+  const final = finalScore(factPct, structurePct, rubric);
+
   const settleTx = await verifier.settle({
     missionId: chainMissionId,
     orderId,
@@ -368,23 +399,47 @@ async function deliverVerifySettle(opts: {
   });
   const settled = await readOrder(chainMissionId, orderId);
   if (!settled?.settled) throw new Error(`Order ${orderId} not settled on chain after ${settleTx}`);
+  const paid = formatDusdc(settled.paid);
   db.prepare(
     "UPDATE orders SET verified=?, paid=?, settle_tx=? WHERE mission_id=? AND chain_order_id=?",
   ).run(final, formatDusdc(settled.paid), settleTx, missionId, orderId.toString());
   db.prepare("INSERT INTO verifications(mission_id, fact_score, rubric_score, final_score) VALUES (?,?,?,?)").run(
     missionId,
-    fact,
-    Math.round(rubric),
+    factPct,
+    rubric,
     final,
+  );
+  const evidence = {
+    provider,
+    lineIndex: line.index,
+    minScore: line.minScore,
+    claims,
+    structure,
+    factScore: factPct,
+    structureScore: structurePct,
+    rubricScore: rubric,
+    finalScore: final,
+    formula: "0.7 × facts + 0.15 × structure + 0.15 × rubric",
+    paid,
+    deliverySource: delivery.source,
+    markdown: delivery.markdown,
+    settleTx,
+    settleUrl: explorerTx(settleTx),
+  };
+  db.prepare("INSERT INTO evidence(mission_id, chain_order_id, provider, payload) VALUES (?,?,?,?)").run(
+    missionId,
+    orderId.toString(),
+    provider,
+    JSON.stringify(evidence),
   );
   publish(missionId, {
     type: "settle",
     act,
-    message: `Settled ${provider} · score ${final} · paid ${formatDusdc(settled.paid)}`,
+    message: `Settled ${provider} · score ${final} · paid ${paid}`,
     tx: settleTx,
     explorerUrl: null,
   });
-  return final;
+  return { score: final, paid };
 }
 
 /**
@@ -443,6 +498,100 @@ export async function recoverStuck() {
   return results;
 }
 
+/**
+ * "Ignore Assay — buy cheapest": purchase the cheapest eligible quote on a
+ * line even though Assay recommends another, then verify and settle it as
+ * usual. Returns what the recommendation expected next to what happened.
+ */
+export async function overrideBuyCheapest(id: string, lineIndex = 0) {
+  const miss = getMission(id);
+  const err = chainConfigured();
+  if (err) throw new Error(err);
+  if (!llmKey()) throw new Error(llmMissingMessage());
+  if (!miss.createTx || miss.status === "closed") throw new Error(`Mission must be signed and open (status ${miss.status})`);
+  if (activeMissions.has(id)) throw new Error("Mission is running now");
+  const line = miss.lines[lineIndex];
+  if (!line) throw new Error(`No line ${lineIndex} in this mission`);
+
+  const quotes = (await quotesFor([line]))[0]!;
+  const recommended = pickQuote(quotes);
+  const cheapest = quotes
+    .filter((q) => q.eligible)
+    .sort((a, b) => Number(parseDusdc(a.full) - parseDusdc(b.full)))[0]!;
+
+  activeMissions.add(id);
+  try {
+    publish(id, {
+      type: "override",
+      act: null,
+      message: `Owner ignored Assay: buying ${cheapest.provider} at ${cheapest.full} instead of ${recommended.provider} (ECS ${recommended.ecs})`,
+      tx: null,
+      explorerUrl: null,
+    });
+    db.prepare("INSERT INTO decisions(mission_id, line_index, provider, payload) VALUES (?,?,?,?)").run(
+      id,
+      line.index,
+      cheapest.provider,
+      JSON.stringify({ lineIndex: line.index, provider: cheapest.provider, quote: cheapest, override: true, recommended: recommended.provider }),
+    );
+    const chainId = BigInt(miss.chainMissionId);
+    const orderId = mandateNextOrderId(await readMandate(chainId));
+    const purchased = await new AgentClient().purchase({
+      missionId: chainId,
+      lineIndex: line.index,
+      unitPrice: parseDusdc(cheapest.full),
+      fullAmount: parseDusdc(cheapest.full),
+      claimedScore: cheapest.claimedScore,
+      provider: loadKey(cheapest.provider).publicKey,
+      orderId,
+    });
+    publish(id, { type: "purchase", act: null, message: `Override purchase · ${cheapest.provider}`, tx: purchased.signature, explorerUrl: null });
+    recordPurchase(id, orderId, cheapest.provider, line.index, cheapest.claimedScore, purchased.signature);
+    const { score, paid } = await deliverVerifySettle({
+      missionId: id,
+      chainMissionId: chainId,
+      goal: miss.goal,
+      line,
+      provider: cheapest.provider,
+      orderId,
+      act: 2,
+      verifier: new VerifierClient(),
+    });
+    return {
+      orderId: orderId.toString(),
+      purchaseUrl: explorerTx(purchased.signature),
+      counterfactual: counterfactual({
+        recommended,
+        override: cheapest,
+        score,
+        paid,
+        minScore: line.minScore,
+        verificationFee: VERIFICATION_FEE,
+      }),
+      evidence: missionEvidence(id).find((e) => e.orderId === orderId.toString()) ?? null,
+    };
+  } finally {
+    activeMissions.delete(id);
+  }
+}
+
+/** Every verified order of a mission with its full evidence and tx links. */
+export function missionEvidence(id: string) {
+  const rows = db
+    .prepare(
+      `SELECT e.chain_order_id as orderId, e.payload, o.claimed, o.purchase_tx as purchaseTx
+       FROM evidence e LEFT JOIN orders o ON o.mission_id = e.mission_id AND o.chain_order_id = e.chain_order_id
+       WHERE e.mission_id = ? ORDER BY e.id`,
+    )
+    .all(id) as Array<{ orderId: string; payload: string; claimed: number | null; purchaseTx: string | null }>;
+  return rows.map((r) => ({
+    orderId: r.orderId,
+    claimedScore: r.claimed,
+    purchaseUrl: r.purchaseTx ? explorerTx(r.purchaseTx) : null,
+    ...JSON.parse(r.payload),
+  }));
+}
+
 export async function closeMission(id: string) {
   const miss = getMission(id);
   const owner = new OwnerClient();
@@ -495,7 +644,7 @@ export async function warmup(n: number) {
     });
     publish(planned.id, { type: "purchase", act: 1, message: `Warmup purchase · ${provider}`, tx: purchased.signature, explorerUrl: null });
     recordPurchase(planned.id, orderId, provider, line.index, quote.claimedScore, purchased.signature);
-    const score = await deliverVerifySettle({ missionId: planned.id, chainMissionId: chainId, goal: miss.goal, line, provider, orderId, act: 2, verifier });
+    const { score } = await deliverVerifySettle({ missionId: planned.id, chainMissionId: chainId, goal: miss.goal, line, provider, orderId, act: 2, verifier });
     db.prepare("UPDATE missions SET status=? WHERE id=?").run("settled", planned.id);
     await closeMission(planned.id);
     results.push({ missionId: planned.id, provider, claimed: quote.claimedScore, score, purchase: purchased.signature });

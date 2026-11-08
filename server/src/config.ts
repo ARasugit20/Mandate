@@ -46,10 +46,12 @@ export const VERIFICATION_FEE = Number(process.env.VERIFICATION_FEE ?? "0.02");
 export const RETRY_PENALTY = Number(process.env.RETRY_PENALTY ?? "0.03");
 // Alpha = smallest, Deep = middle, Premium = largest. Planner and rubric
 // (the grader) use the strongest model that is reliably available.
-// Gemini defaults are free-tier models that answered on 2026-11-07;
-// gemini-3.8-flash was overloaded (503) and Pro is not on the free tier.
+// Gemini defaults are free-tier models checked on 2026-11-07. gemini-3.6-flash
+// allows only 20 requests/day free, 3.8-flash was overloaded (503), and Pro is
+// not free, so Premium and the grader share 3.5-flash-lite; Premium differs by
+// a more thorough prompt.
 const DEFAULT_MODELS = {
-  gemini: { alpha: "gemini-3.1-flash-lite", deep: "gemini-3.5-flash-lite", premium: "gemini-3.6-flash", judge: "gemini-3.6-flash" },
+  gemini: { alpha: "gemini-3.1-flash-lite", deep: "gemini-3.5-flash-lite", premium: "gemini-3.5-flash-lite", judge: "gemini-3.5-flash-lite" },
   anthropic: { alpha: "claude-haiku-5-5", deep: "claude-sonnet-5-5", premium: "claude-opus-5-5", judge: "claude-sonnet-5-5" },
 }[LLM_PROVIDER];
 export const MODEL_ALPHA = process.env.MODEL_ALPHA ?? DEFAULT_MODELS.alpha;

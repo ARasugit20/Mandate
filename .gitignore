@@ -13,3 +13,4 @@ test-ledger/
 **/*.so
 .DS_Store
 .keys/
+server/edgar-cache.json

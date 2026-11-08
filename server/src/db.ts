@@ -86,13 +86,37 @@ CREATE TABLE IF NOT EXISTS reference_facts (
   key TEXT PRIMARY KEY,
   value REAL NOT NULL
 );
+-- Replaces reference_facts (no period, no source). Filled from SEC EDGAR.
+CREATE TABLE IF NOT EXISTS edgar_facts (
+  key TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  value REAL NOT NULL,
+  period TEXT NOT NULL,
+  period_label TEXT NOT NULL,
+  source_url TEXT NOT NULL
+);
+-- Full verification result per order: claims vs reference, structure checks, scores.
+CREATE TABLE IF NOT EXISTS evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mission_id TEXT NOT NULL,
+  chain_order_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
 `);
 
-const insertFacts = db.prepare("INSERT OR REPLACE INTO reference_facts(key, value) VALUES (?, ?)");
-insertFacts.run("revenue_ttm_b", 130.497);
-insertFacts.run("gross_margin", 0.7499);
-insertFacts.run("data_center_pct", 0.88);
+export type RefFact = { key: string; label: string; value: number; period: string; periodLabel: string; sourceUrl: string };
 
-export function facts(): Array<{ key: string; value: number }> {
-  return db.prepare("SELECT key, value FROM reference_facts").all() as Array<{ key: string; value: number }>;
+export function facts(): RefFact[] {
+  return db
+    .prepare("SELECT key, label, value, period, period_label as periodLabel, source_url as sourceUrl FROM edgar_facts")
+    .all() as RefFact[];
+}
+
+export function saveFacts(list: RefFact[]) {
+  const insert = db.prepare(
+    "INSERT OR REPLACE INTO edgar_facts(key, label, value, period, period_label, source_url) VALUES (?,?,?,?,?,?)",
+  );
+  db.exec("DELETE FROM edgar_facts");
+  for (const f of list) insert.run(f.key, f.label, f.value, f.period, f.periodLabel, f.sourceUrl);
 }

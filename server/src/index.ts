@@ -11,9 +11,12 @@ import {
   getMission,
   health,
   honesty,
+  missionEvidence,
+  overrideBuyCheapest,
   planMission,
   quotesFor,
   receipts,
+  referenceFacts,
   recoverMission,
   recoverStuck,
   runAttacks,
@@ -95,6 +98,34 @@ app.post("/api/missions/:id/recover", async (c) => {
     return c.json(await recoverMission(c.req.param("id")));
   } catch (e) {
     return c.json({ error: message(e) }, 400);
+  }
+});
+
+/** "Ignore Assay — buy cheapest" on one line. Body: { lineIndex?: number }. */
+app.post("/api/missions/:id/override", async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { lineIndex?: number };
+    return c.json(await overrideBuyCheapest(c.req.param("id"), body.lineIndex ?? 0));
+  } catch (e) {
+    return c.json({ error: message(e) }, 400);
+  }
+});
+
+/** Per-order verification evidence: claims vs reference, structure, scores, tx links. */
+app.get("/api/missions/:id/evidence", (c) => {
+  try {
+    return c.json({ evidence: missionEvidence(c.req.param("id")) });
+  } catch (e) {
+    return c.json({ error: message(e) }, 404);
+  }
+});
+
+/** The EDGAR reference values the verifier checks against. */
+app.get("/api/reference-facts", async (c) => {
+  try {
+    return c.json({ facts: await referenceFacts() });
+  } catch (e) {
+    return c.json({ error: message(e) }, 502);
   }
 });
 
