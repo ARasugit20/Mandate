@@ -1,0 +1,48 @@
+name: Deploy demo site
+
+# Publishes the frontend to GitHub Pages in fixture mode: sample data only,
+# no server, no keys and no chain access, so anyone can click through it
+# safely. The live devnet demo still runs locally with `npm run dev`.
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", "shared/**", ".github/workflows/deploy-demo.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Only the app's dependencies; server and program aren't needed for a static build.
+      - run: npm ci -w app --include-workspace-root
+      # Reported but not blocking: the static build doesn't depend on it.
+      - run: npm run typecheck -w app
+        continue-on-error: true
+      - run: npm run build -w app -- --mode fixtures --base /Mandate/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
