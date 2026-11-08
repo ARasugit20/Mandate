@@ -27,27 +27,36 @@ export const PORT = Number(process.env.PORT ?? 8787);
 export const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL ?? "";
 export const PROGRAM_ID = process.env.PROGRAM_ID ?? "";
 export const DUSDC_MINT = process.env.DUSDC_MINT ?? "";
-export const LLM_PROVIDER = (process.env.LLM_PROVIDER ?? "gemini").toLowerCase();
-export const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? "";
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
-export const VERIFICATION_FEE = Number(process.env.VERIFICATION_FEE ?? "0.02");
-export const RETRY_PENALTY = Number(process.env.RETRY_PENALTY ?? "0.03");
-
-const gemini = LLM_PROVIDER === "gemini";
-export const MODEL_ALPHA = process.env.MODEL_ALPHA ?? (gemini ? "gemini-3.5-flash-lite" : "claude-haiku-4-5-20251001");
-export const MODEL_DEEP = process.env.MODEL_DEEP ?? (gemini ? "gemini-3.5-flash-lite" : "claude-sonnet-4-5-20250929");
-export const MODEL_PREMIUM = process.env.MODEL_PREMIUM ?? (gemini ? "gemini-3.5-flash-lite" : "claude-opus-4-1-20250805");
-export const MODEL_PLANNER = process.env.MODEL_PLANNER ?? (gemini ? "gemini-3.5-flash-lite" : MODEL_DEEP);
-export const MODEL_RUBRIC = process.env.MODEL_RUBRIC ?? MODEL_DEEP;
+export const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? "";
+/** Gemini unless LLM_PROVIDER=anthropic. */
+export const LLM_PROVIDER = process.env.LLM_PROVIDER === "anthropic" ? "anthropic" : "gemini";
+export const LLM_API_KEY = LLM_PROVIDER === "gemini" ? GEMINI_API_KEY : ANTHROPIC_API_KEY;
 
 /** The key the active provider needs, or "" when it is missing. */
 export function llmKey(): string {
-  return gemini ? GEMINI_API_KEY : ANTHROPIC_API_KEY;
+  return LLM_API_KEY;
 }
 
 export function llmMissingMessage(): string {
-  return gemini ? "GEMINI_API_KEY not set" : "ANTHROPIC_API_KEY not set";
+  return LLM_PROVIDER === "gemini" ? "GEMINI_API_KEY not set" : "ANTHROPIC_API_KEY not set";
 }
+
+export const VERIFICATION_FEE = Number(process.env.VERIFICATION_FEE ?? "0.02");
+export const RETRY_PENALTY = Number(process.env.RETRY_PENALTY ?? "0.03");
+// Alpha = smallest, Deep = middle, Premium = largest. Planner and rubric
+// (the grader) use the strongest model that is reliably available.
+// Gemini defaults are free-tier models that answered on 2026-11-07;
+// gemini-3.8-flash was overloaded (503) and Pro is not on the free tier.
+const DEFAULT_MODELS = {
+  gemini: { alpha: "gemini-3.1-flash-lite", deep: "gemini-3.5-flash-lite", premium: "gemini-3.6-flash", judge: "gemini-3.6-flash" },
+  anthropic: { alpha: "claude-haiku-5-5", deep: "claude-sonnet-5-5", premium: "claude-opus-5-5", judge: "claude-sonnet-5-5" },
+}[LLM_PROVIDER];
+export const MODEL_ALPHA = process.env.MODEL_ALPHA ?? DEFAULT_MODELS.alpha;
+export const MODEL_DEEP = process.env.MODEL_DEEP ?? DEFAULT_MODELS.deep;
+export const MODEL_PREMIUM = process.env.MODEL_PREMIUM ?? DEFAULT_MODELS.premium;
+export const MODEL_PLANNER = process.env.MODEL_PLANNER ?? DEFAULT_MODELS.judge;
+export const MODEL_RUBRIC = process.env.MODEL_RUBRIC ?? DEFAULT_MODELS.judge;
 
 export const KEY_NAMES = [
   "owner",

@@ -96,3 +96,10 @@ test("fact score 2% window and blend", () => {
   assert.equal(blendScore(null, 80), 80);
   assert.equal(blendScore(100, 0), 70);
 });
+
+test("fact score accepts ratios given as percent", () => {
+  const facts = [{ key: "gross_margin", value: 0.7499 }];
+  assert.equal(factScore([{ key: "gross_margin", value: 75 }], facts), 100);
+  assert.equal(factScore([{ key: "gross_margin", value: 0.75 }], facts), 100);
+  assert.equal(factScore([{ key: "gross_margin", value: 78.4 }], facts), 0);
+});

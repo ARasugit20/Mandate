@@ -7,6 +7,7 @@ import {
   DEMO_BUDGET,
   DEMO_GOAL,
   DEMO_RESEARCH_CAP,
+  PROVIDERS,
   type AttackRun,
   type CategoryId,
   type HealthResponse,
@@ -27,9 +28,12 @@ import {
   readMandate,
   readProviderStats,
 } from "./chain/clients.ts";
-import { explorerClusterConnection } from "./chain/send.ts";
+import { explorerClusterConnection, mandatePda, orderPda, programId } from "./chain/send.ts";
 import {
   LLM_PROVIDER,
+  MODEL_ALPHA,
+  MODEL_DEEP,
+  MODEL_PREMIUM,
   llmKey,
   llmMissingMessage,
   RETRY_PENALTY,
@@ -52,6 +56,24 @@ import {
 } from "./math.ts";
 import { eventsFor, publish } from "./sse.ts";
 import { DUSDC_MINT, PROGRAM_ID } from "./config.ts";
+
+/** Read one order account from chain, or null if it does not exist. */
+async function readOrder(chainMissionId: bigint, orderId: bigint) {
+  const owner = new OwnerClient();
+  const mandate = mandatePda(owner.owner.publicKey, chainMissionId, programId());
+  const pda = orderPda(mandate, orderId, programId());
+  if (!(await owner.connection.getAccountInfo(pda))) return null;
+  // Anchor returns camelCase fields; u64 values come back as BN.
+  const raw = await (owner.program.account as { order: { fetch: (k: PublicKey) => Promise<any> } }).order.fetch(pda);
+  return {
+    provider: raw.provider as PublicKey,
+    lineIndex: Number(raw.lineIndex),
+    claimedScore: Number(raw.claimedScore),
+    settled: raw.settled as boolean,
+    score: Number(raw.score),
+    paid: BigInt(raw.paid.toString()),
+  };
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -84,6 +106,10 @@ export async function planMission(goal: string, budget: string): Promise<Mission
       budget,
     ).map((l, i) => ({ ...l, index: i }));
   }
+  return insertMission(goal, budget, lines);
+}
+
+function insertMission(goal: string, budget: string, lines: LinePlan[]): Mission {
   const id = randomUUID();
   const chainMissionId = BigInt("0x" + id.replace(/-/g, "").slice(0, 16)).toString();
   const hash = missionHash(goal, lines);
@@ -223,115 +249,198 @@ export async function runMission(id: string) {
   // Purchase commits vault funds before delivery, and only the verifier can
   // release them. Refuse up front rather than orphan an unsettled order.
   if (!llmKey()) throw new Error(llmMissingMessage());
-  db.prepare("UPDATE missions SET status=? WHERE id=?").run("running", id);
-  const agent = new AgentClient();
-  const verifier = new VerifierClient();
-  let act: 1 | 2 | 3 = 1;
-  for (const line of miss.lines) {
-    let attempts = 0;
-    while (attempts < 2) {
-      attempts += 1;
-      const qs = (await quotesFor([line]))[0]!;
-      for (const q of qs) {
-        db.prepare("INSERT INTO quotes(mission_id, line_index, provider, payload) VALUES (?,?,?,?)").run(
+  if (activeMissions.has(id)) throw new Error("Mission is already running");
+  if (miss.status === "running") {
+    throw new Error("Mission was interrupted mid-run. Use recover to settle its open orders instead of buying again.");
+  }
+  activeMissions.add(id);
+  try {
+    db.prepare("UPDATE missions SET status=? WHERE id=?").run("running", id);
+    const agent = new AgentClient();
+    const verifier = new VerifierClient();
+    let act: 1 | 2 | 3 = 1;
+    for (const line of miss.lines) {
+      let attempts = 0;
+      while (attempts < 2) {
+        attempts += 1;
+        const qs = (await quotesFor([line]))[0]!;
+        for (const q of qs) {
+          db.prepare("INSERT INTO quotes(mission_id, line_index, provider, payload) VALUES (?,?,?,?)").run(
+            id,
+            line.index,
+            q.provider,
+            JSON.stringify(q),
+          );
+        }
+        publish(id, {
+          type: "quotes",
+          act,
+          message: `Quotes received · ${line.categoryName}`,
+          tx: null,
+          explorerUrl: null,
+        });
+        const chosen = pickQuote(qs);
+        db.prepare("INSERT INTO decisions(mission_id, line_index, provider, payload) VALUES (?,?,?,?)").run(
           id,
           line.index,
-          q.provider,
-          JSON.stringify(q),
+          chosen.provider,
+          JSON.stringify({ lineIndex: line.index, provider: chosen.provider, quote: chosen }),
         );
+        publish(id, {
+          type: "decision",
+          act,
+          message: `${chosen.provider} chosen · ECS ${chosen.ecs}`,
+          tx: null,
+          explorerUrl: null,
+        });
+        const onchain = await readMandate(BigInt(miss.chainMissionId));
+        const orderId = mandateNextOrderId(onchain);
+        const purchased = await agent.purchase({
+          missionId: BigInt(miss.chainMissionId),
+          lineIndex: line.index,
+          unitPrice: parseDusdc(chosen.full),
+          fullAmount: parseDusdc(chosen.full),
+          claimedScore: chosen.claimedScore,
+          provider: loadKey(chosen.provider).publicKey,
+          orderId,
+        });
+        publish(id, { type: "purchase", act, message: "Purchase submitted", tx: purchased.signature, explorerUrl: null });
+        recordPurchase(id, orderId, chosen.provider, line.index, chosen.claimedScore, purchased.signature);
+        const final = await deliverVerifySettle({ missionId: id, chainMissionId: BigInt(miss.chainMissionId), goal: miss.goal, line, provider: chosen.provider, orderId, act, verifier });
+        if (final >= line.minScore) break;
       }
-      publish(id, {
-        type: "quotes",
-        act,
-        message: `Quotes received · ${line.categoryName}`,
-        tx: null,
-        explorerUrl: null,
-      });
-      const chosen = pickQuote(qs);
-      db.prepare("INSERT INTO decisions(mission_id, line_index, provider, payload) VALUES (?,?,?,?)").run(
-        id,
-        line.index,
-        chosen.provider,
-        JSON.stringify({ lineIndex: line.index, provider: chosen.provider, quote: chosen }),
-      );
-      publish(id, {
-        type: "decision",
-        act,
-        message: `${chosen.provider} chosen · ECS ${chosen.ecs}`,
-        tx: null,
-        explorerUrl: null,
-      });
-      const onchain = await readMandate(BigInt(miss.chainMissionId));
-      const orderId = mandateNextOrderId(onchain);
-      const purchased = await agent.purchase({
-        missionId: BigInt(miss.chainMissionId),
-        lineIndex: line.index,
-        unitPrice: parseDusdc(chosen.full),
-        fullAmount: parseDusdc(chosen.full),
-        claimedScore: chosen.claimedScore,
-        provider: loadKey(chosen.provider).publicKey,
-        orderId,
-      });
-      publish(id, { type: "purchase", act, message: "Purchase submitted", tx: purchased.signature, explorerUrl: null });
-      const delivery = await llmDeliver(chosen.provider, miss.goal, line.categoryName);
-      db.prepare("INSERT INTO deliveries(mission_id, provider, markdown, claims_json) VALUES (?,?,?,?)").run(
-        id,
-        chosen.provider,
-        delivery.markdown,
-        JSON.stringify(delivery.claims),
-      );
-      const fact = factScore(delivery.claims, facts());
-      let rubric = 50;
-      try {
-        rubric = await llmRubric(miss.goal, delivery.markdown);
-      } catch (e) {
-        throw e;
-      }
-      const final = blendScore(fact, rubric);
-      const settleTx = await verifier.settle({
-        missionId: BigInt(miss.chainMissionId),
-        orderId,
-        score: final,
-        provider: loadKey(chosen.provider).publicKey,
-      });
-      db.prepare(
-        "INSERT INTO orders(mission_id, chain_order_id, provider, line_index, claimed, verified, paid, purchase_tx, settle_tx) VALUES (?,?,?,?,?,?,?,?,?)",
-      ).run(
-        id,
-        orderId.toString(),
-        chosen.provider,
-        line.index,
-        chosen.claimedScore,
-        final,
-        formatDusdc(
-          final >= 90
-            ? parseDusdc(chosen.full)
-            : line.minScore < 90 && final >= line.minScore
-              ? parseDusdc(chosen.full) / 2n
-              : 0n,
-        ),
-        purchased.signature,
-        settleTx,
-      );
-      db.prepare("INSERT INTO verifications(mission_id, fact_score, rubric_score, final_score) VALUES (?,?,?,?)").run(
-        id,
-        fact,
-        rubric,
-        final,
-      );
-      publish(id, {
-        type: "settle",
-        act,
-        message: `Settled score ${final}`,
-        tx: settleTx,
-        explorerUrl: null,
-      });
-      if (final >= line.minScore) break;
+      if (act < 3) act = (act + 1) as 1 | 2 | 3;
     }
-    if (act < 3) act = (act + 1) as 1 | 2 | 3;
+    db.prepare("UPDATE missions SET status=? WHERE id=?").run("settled", id);
+    return getMission(id);
+  } finally {
+    activeMissions.delete(id);
   }
-  db.prepare("UPDATE missions SET status=? WHERE id=?").run("settled", id);
-  return getMission(id);
+}
+
+/** Missions whose engine loop is executing right now. Recovery skips them. */
+const activeMissions = new Set<string>();
+
+/**
+ * Write the order row as soon as the purchase confirms, before delivery.
+ * If delivery or scoring fails afterwards, the row is the record that an
+ * on-chain commitment is waiting for a settle.
+ */
+function recordPurchase(missionId: string, orderId: bigint, provider: ProviderName, lineIndex: number, claimed: number, purchaseTx: string | null) {
+  db.prepare(
+    "INSERT INTO orders(mission_id, chain_order_id, provider, line_index, claimed, purchase_tx) VALUES (?,?,?,?,?,?)",
+  ).run(missionId, orderId.toString(), provider, lineIndex, claimed, purchaseTx);
+}
+
+/**
+ * The one path from a purchased order to a settled one: the provider
+ * delivers, the delivery is scored against reference facts plus a rubric,
+ * the verifier settles that score, and the amount paid is read back from
+ * the order account rather than recomputed.
+ */
+async function deliverVerifySettle(opts: {
+  missionId: string;
+  chainMissionId: bigint;
+  goal: string;
+  line: LinePlan;
+  provider: ProviderName;
+  orderId: bigint;
+  act: 1 | 2 | 3;
+  verifier: VerifierClient;
+}): Promise<number> {
+  const { missionId, chainMissionId, goal, line, provider, orderId, act, verifier } = opts;
+  const delivery = await llmDeliver(provider, goal, line.categoryName);
+  db.prepare("INSERT INTO deliveries(mission_id, provider, markdown, claims_json) VALUES (?,?,?,?)").run(
+    missionId,
+    provider,
+    delivery.markdown,
+    JSON.stringify(delivery.claims),
+  );
+  const fact = factScore(delivery.claims, facts());
+  const rubric = await llmRubric(goal, delivery.markdown);
+  // Settle takes a u8 in 0..=100; the rubric model may return a float.
+  const final = Math.max(0, Math.min(100, Math.round(blendScore(fact, rubric))));
+  const settleTx = await verifier.settle({
+    missionId: chainMissionId,
+    orderId,
+    score: final,
+    provider: loadKey(provider).publicKey,
+  });
+  const settled = await readOrder(chainMissionId, orderId);
+  if (!settled?.settled) throw new Error(`Order ${orderId} not settled on chain after ${settleTx}`);
+  db.prepare(
+    "UPDATE orders SET verified=?, paid=?, settle_tx=? WHERE mission_id=? AND chain_order_id=?",
+  ).run(final, formatDusdc(settled.paid), settleTx, missionId, orderId.toString());
+  db.prepare("INSERT INTO verifications(mission_id, fact_score, rubric_score, final_score) VALUES (?,?,?,?)").run(
+    missionId,
+    fact,
+    Math.round(rubric),
+    final,
+  );
+  publish(missionId, {
+    type: "settle",
+    act,
+    message: `Settled ${provider} · score ${final} · paid ${formatDusdc(settled.paid)}`,
+    tx: settleTx,
+    explorerUrl: null,
+  });
+  return final;
+}
+
+/**
+ * Settle every order of a mission that was purchased on chain but never
+ * settled, for example because delivery failed mid-run. Orders are found by
+ * scanning the mandate's order PDAs, so this also recovers runs from before
+ * the order row was written at purchase time.
+ */
+export async function recoverMission(id: string): Promise<{ missionId: string; recovered: number; note?: string }> {
+  if (activeMissions.has(id)) return { missionId: id, recovered: 0, note: "mission is running now" };
+  const miss = getMission(id);
+  const err = chainConfigured();
+  if (err) throw new Error(err);
+  if (!llmKey()) throw new Error(llmMissingMessage());
+  if (!miss.createTx) return { missionId: id, recovered: 0, note: "never signed on chain" };
+  const chainId = BigInt(miss.chainMissionId);
+  const next = mandateNextOrderId(await readMandate(chainId));
+  const verifier = new VerifierClient();
+  const byKey = new Map(PROVIDERS.map((p) => [loadKey(p).publicKey.toBase58(), p] as const));
+  let recovered = 0;
+  activeMissions.add(id);
+  try {
+    for (let oid = 0n; oid < next; oid++) {
+      const order = await readOrder(chainId, oid);
+      if (!order || order.settled) continue;
+      const provider = byKey.get(order.provider.toBase58());
+      if (!provider) throw new Error(`Order ${oid} names unknown provider ${order.provider.toBase58()}`);
+      const line = miss.lines[order.lineIndex];
+      if (!line) throw new Error(`Order ${oid} has line ${order.lineIndex}, not in the plan`);
+      const known = db
+        .prepare("SELECT 1 FROM orders WHERE mission_id=? AND chain_order_id=?")
+        .get(id, oid.toString());
+      if (!known) recordPurchase(id, oid, provider, line.index, order.claimedScore, null);
+      publish(id, { type: "recover", act: null, message: `Recovering unsettled order ${oid} (${provider})`, tx: null, explorerUrl: null });
+      await deliverVerifySettle({ missionId: id, chainMissionId: chainId, goal: miss.goal, line, provider, orderId: oid, act: 3, verifier });
+      recovered += 1;
+    }
+  } finally {
+    activeMissions.delete(id);
+  }
+  if (miss.status === "running") db.prepare("UPDATE missions SET status=? WHERE id=?").run("settled", id);
+  return { missionId: id, recovered };
+}
+
+/** Recover every mission left in `running` by a crashed or failed run. */
+export async function recoverStuck() {
+  const ids = db.prepare("SELECT id FROM missions WHERE status = 'running'").all() as Array<{ id: string }>;
+  const results = [];
+  for (const { id } of ids) {
+    try {
+      results.push(await recoverMission(id));
+    } catch (e) {
+      results.push({ missionId: id, recovered: 0, note: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return results;
 }
 
 export async function closeMission(id: string) {
@@ -343,25 +452,40 @@ export async function closeMission(id: string) {
   return getMission(id);
 }
 
+/**
+ * Warmup mandate: one research line whose cap admits all three providers.
+ * The demo research line caps at 0.10, which excludes Premium (0.20), so
+ * buying Premium under the demo plan would mean mislabeling another quote.
+ */
+const WARMUP_LINES: LinePlan[] = [
+  { index: 0, category: 0, categoryName: "research", budget: "0.500000", maxUnitPrice: "0.250000", minScore: 85 },
+];
+
+/**
+ * Build real history: N single-order missions, providers round-robin.
+ * Every score comes from the same deliver → verify path as a live mission,
+ * and nothing is recorded without a confirmed settle.
+ */
 export async function warmup(n: number) {
   const err = chainConfigured();
   if (err) throw new Error(err);
-  const names: ProviderName[] = ["alpha", "deep", "premium"];
+  if (!llmKey()) throw new Error(llmMissingMessage());
+  const agent = new AgentClient();
+  const verifier = new VerifierClient();
   const results = [];
   for (let i = 0; i < n; i++) {
-    const planned = await planMission(DEMO_GOAL, DEMO_BUDGET);
+    const provider = PROVIDERS[i % PROVIDERS.length]!;
+    const planned = insertMission(DEMO_GOAL, "0.500000", WARMUP_LINES);
     await signMission(planned.id);
     const miss = getMission(planned.id);
-    const agent = new AgentClient();
-    const verifier = new VerifierClient();
-    const provider = names[i % 3]!;
+    const chainId = BigInt(miss.chainMissionId);
     const line = miss.lines[0]!;
-    const qs = (await quotesFor([line]))[0]!;
-    const quote = qs.find((q) => q.provider === provider && q.eligible) ?? qs.find((q) => q.eligible)!;
-    const onchain = await readMandate(BigInt(miss.chainMissionId));
-    const orderId = mandateNextOrderId(onchain);
+    const quote = (await quotesFor([line]))[0]!.find((q) => q.provider === provider);
+    if (!quote?.eligible) throw new Error(`Warmup line does not admit ${provider}: ${quote?.ineligibleReason}`);
+    const orderId = mandateNextOrderId(await readMandate(chainId));
+    db.prepare("UPDATE missions SET status=? WHERE id=?").run("running", planned.id);
     const purchased = await agent.purchase({
-      missionId: BigInt(miss.chainMissionId),
+      missionId: chainId,
       lineIndex: line.index,
       unitPrice: parseDusdc(quote.full),
       fullAmount: parseDusdc(quote.full),
@@ -369,30 +493,12 @@ export async function warmup(n: number) {
       provider: loadKey(provider).publicKey,
       orderId,
     });
-    const score = provider === "alpha" ? 61 : provider === "deep" ? 80 : 93;
-    const settleTx = await verifier.settle({
-      missionId: BigInt(miss.chainMissionId),
-      orderId,
-      score,
-      provider: loadKey(provider).publicKey,
-    });
-    db.prepare(
-      "INSERT INTO orders(mission_id, chain_order_id, provider, line_index, claimed, verified, paid, purchase_tx, settle_tx) VALUES (?,?,?,?,?,?,?,?,?)",
-    ).run(
-      planned.id,
-      orderId.toString(),
-      provider,
-      line.index,
-      quote.claimedScore,
-      score,
-      formatDusdc(score >= 90 ? parseDusdc(quote.full) : score >= line.minScore && line.minScore < 90 ? parseDusdc(quote.full) / 2n : 0n),
-      purchased.signature,
-      settleTx,
-    );
+    publish(planned.id, { type: "purchase", act: 1, message: `Warmup purchase · ${provider}`, tx: purchased.signature, explorerUrl: null });
+    recordPurchase(planned.id, orderId, provider, line.index, quote.claimedScore, purchased.signature);
+    const score = await deliverVerifySettle({ missionId: planned.id, chainMissionId: chainId, goal: miss.goal, line, provider, orderId, act: 2, verifier });
+    db.prepare("UPDATE missions SET status=? WHERE id=?").run("settled", planned.id);
     await closeMission(planned.id);
-    results.push({ missionId: planned.id, provider, score, purchase: purchased.signature, settle: settleTx });
-    const { pace } = await import("./llm.ts");
-    await pace();
+    results.push({ missionId: planned.id, provider, claimed: quote.claimedScore, score, purchase: purchased.signature });
   }
   return results;
 }
@@ -474,7 +580,7 @@ export async function health(): Promise<HealthResponse> {
   }
 
   if (!llmKey()) push("LLM", "error", llmMissingMessage());
-  else push("LLM", "pass", `${LLM_PROVIDER} · key present`);
+  else push("LLM", "pass", `${LLM_PROVIDER}: ${MODEL_ALPHA} / ${MODEL_DEEP} / ${MODEL_PREMIUM}`);
 
   const ok = rows.every((r) => r.status === "pass");
   const chainOk = CHAIN_HEALTH_ROWS.every(

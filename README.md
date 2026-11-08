@@ -67,6 +67,19 @@ flowchart LR
 ## Limits (honest)
 
 - Verifier key is team-held (demo).
-- LLM “providers” Alpha / Deep / Premium are server prompts, not third-party wallets.
+- LLM “providers” Alpha / Deep / Premium are server prompts, not third-party wallets. Default backend is the Gemini free tier (`LLM_PROVIDER=gemini`, `GEMINI_API_KEY`): Alpha `gemini-3.1-flash-lite`, Deep `gemini-3.5-flash-lite`, Premium and grader `gemini-3.6-flash`. Override any with `MODEL_*`. Set `LLM_PROVIDER=anthropic` to use Claude.
+- Alpha is a scripted overclaimer: its system prompt tells it to invent figures. Without that, models recall NVIDIA's real FY2025 numbers and pass the fact check.
 - Provider registry is per-owner on chain.
 - Default program id in repo is local placeholder until devnet deploy.
+- `reclaim_order` (owner cancels an unsettled order after expiry, so a silent verifier cannot lock funds) is in `lib.rs`, the localnet tests and the IDL, but **not yet deployed**. Until the program is upgraded on devnet, recover interrupted runs with `POST /api/recover`, which settles open orders through the normal verifier path.
+- Warmup runs real delivery and verification (needs `ANTHROPIC_API_KEY`). It uses its own one-line mandate with a 0.25 research cap so Premium can be bought at its real quote.
+
+## Installing on an exFAT/FAT drive
+
+npm workspaces need symlinks, which exFAT cannot store (`EISDIR ... symlink`). Install each package on its own and point the root scripts at the server's modules:
+
+```bash
+npm install --workspaces=false --no-package-lock
+for d in server app program; do (cd $d && npm install --workspaces=false --no-package-lock); done
+NODE_PATH="$PWD/server/node_modules" npx tsx scripts/keys.ts   # same prefix for any scripts/*.ts
+```

@@ -14,6 +14,8 @@ import {
   planMission,
   quotesFor,
   receipts,
+  recoverMission,
+  recoverStuck,
   runAttacks,
   runMission,
   signMission,
@@ -83,6 +85,23 @@ app.post("/api/missions/:id/run", async (c) => {
 app.post("/api/missions/:id/close", async (c) => {
   try {
     return c.json(await closeMission(c.req.param("id")));
+  } catch (e) {
+    return c.json({ error: message(e) }, 400);
+  }
+});
+
+app.post("/api/missions/:id/recover", async (c) => {
+  try {
+    return c.json(await recoverMission(c.req.param("id")));
+  } catch (e) {
+    return c.json({ error: message(e) }, 400);
+  }
+});
+
+/** Settle open orders on every mission a failed run left in `running`. */
+app.post("/api/recover", async (c) => {
+  try {
+    return c.json({ results: await recoverStuck() });
   } catch (e) {
     return c.json({ error: message(e) }, 400);
   }

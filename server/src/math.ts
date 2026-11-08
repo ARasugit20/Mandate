@@ -176,7 +176,10 @@ export function factScore(
   for (const claim of claims) {
     const fact = byKey.get(claim.key);
     if (fact == null || fact === 0) continue;
-    const ok = Math.abs(claim.value - fact) / Math.abs(fact) <= 0.02;
+    // Ratios are stored as fractions (0.75); models often answer in percent (75).
+    let value = claim.value;
+    if (fact <= 1 && value > 1 && value <= 100) value = value / 100;
+    const ok = Math.abs(value - fact) / Math.abs(fact) <= 0.02;
     matched.push(ok ? 100 : 0);
   }
   if (matched.length === 0) return null;
