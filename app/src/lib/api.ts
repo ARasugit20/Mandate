@@ -4,7 +4,9 @@ import type {
   Mission,
   ProviderHonesty,
   Quote,
-  Receipt,
+  ReceiptDetail,
+  WarmupProgress,
+  WarmupSummaryRow,
 } from "./types";
 import { ATTACK_CARDS } from "./types";
 
@@ -32,11 +34,16 @@ export const api = {
   close: (id: string) => req<Mission>(`/api/missions/${id}/close`, { method: "POST" }),
   mission: (id: string) => req<Mission>(`/api/missions/${id}`),
   missionQuotes: (id: string) => req<{ quotes: Quote[][] }>(`/api/missions/${id}/quotes`),
-  warmup: (n = 10) => req<{ results: unknown[] }>("/api/warmup", { method: "POST", body: JSON.stringify({ n }) }),
+  warmup: (n = 10) =>
+    req<{ progress: WarmupProgress[]; summary: WarmupSummaryRow[] }>("/api/warmup", {
+      method: "POST",
+      body: JSON.stringify({ n }),
+    }),
+  warmupStreamUrl: (n = 10) => `${BASE}/api/warmup/stream?n=${n}`,
   attacks: () => req<{ cards: typeof ATTACK_CARDS; runs: AttackRun[] }>("/api/attacks", { method: "POST" }),
   attackCards: () => req<{ cards: typeof ATTACK_CARDS }>("/api/attacks"),
   providers: () => req<{ providers: ProviderHonesty[] }>("/api/providers"),
-  receipts: () => req<{ receipts: Receipt[] }>("/api/receipts"),
+  receipts: () => req<{ receipts: ReceiptDetail[] }>("/api/receipts"),
   register: () => req<{ sigs: unknown[] }>("/api/setup/register", { method: "POST" }),
   eventsUrl: (id: string) => `${BASE}/api/missions/${id}/events`,
 };

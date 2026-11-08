@@ -4,7 +4,7 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { ATTACK_CARDS, DEMO_BUDGET, DEMO_GOAL } from "../../shared/types.ts";
 import { OwnerClient } from "./chain/clients.ts";
-import { PORT, chainConfigured, explorerTx, loadKey } from "./config.ts";
+import { PORT, chainConfigured, loadKey } from "./config.ts";
 import "./db.ts";
 import {
   closeMission,
@@ -13,11 +13,13 @@ import {
   honesty,
   planMission,
   quotesFor,
+  receipt,
   receipts,
   runAttacks,
   runMission,
   signMission,
   warmup,
+  warmupStream,
 } from "./engine.ts";
 import { eventsFor, subscribe } from "./sse.ts";
 
@@ -126,10 +128,27 @@ app.get("/api/missions/:id/events", (c) => {
 app.post("/api/warmup", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { n?: number };
   try {
-    return c.json({ results: await warmup(body.n ?? 10) });
+    return c.json(await warmup(body.n ?? 10));
   } catch (e) {
     return c.json({ error: message(e) }, 400);
   }
+});
+
+/**
+ * GET rather than POST so the browser can read it with EventSource. Warmup
+ * takes minutes, and a blocking call leaves the Setup tab with nothing to show.
+ */
+app.get("/api/warmup/stream", (c) => {
+  const n = Number(c.req.query("n") ?? 10);
+  return streamSSE(c, async (stream) => {
+    try {
+      for await (const msg of warmupStream(Number.isFinite(n) && n > 0 ? n : 10)) {
+        await stream.writeSSE({ event: msg.kind, data: JSON.stringify(msg) });
+      }
+    } catch (e) {
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ error: message(e) }) });
+    }
+  });
 });
 
 app.post("/api/attacks", async (c) => {
@@ -152,8 +171,17 @@ app.get("/api/providers", async (c) => {
 
 app.get("/api/receipts", (c) => {
   try {
-    const rows = receipts().map((r) => ({ ...r, explorerUrl: explorerTx(r.tx) }));
-    return c.json({ receipts: rows });
+    return c.json({ receipts: receipts() });
+  } catch (e) {
+    return c.json({ error: message(e) }, 500);
+  }
+});
+
+app.get("/api/receipts/:missionId/:orderId", (c) => {
+  try {
+    const found = receipt(c.req.param("orderId"), c.req.param("missionId"));
+    if (!found) return c.json({ error: "Unknown receipt" }, 404);
+    return c.json(found);
   } catch (e) {
     return c.json({ error: message(e) }, 500);
   }

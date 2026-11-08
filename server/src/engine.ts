@@ -11,11 +11,19 @@ import {
   type CategoryId,
   type HealthResponse,
   type HealthRow,
+  type InstructionName,
   type LinePlan,
   type MinScore,
   type Mission,
+  type PayoutMath,
+  type PayoutTier,
   type ProviderName,
   type Quote,
+  type ReceiptDetail,
+  type TxRef,
+  type Verification,
+  type WarmupProgress,
+  type WarmupSummaryRow,
 } from "../../shared/types.ts";
 import {
   AgentClient,
@@ -36,25 +44,48 @@ import {
   SOLANA_RPC_URL,
   VERIFICATION_FEE,
   chainConfigured,
+  explorerTx,
   loadKey,
   tryLoadKey,
 } from "./config.ts";
 import { db, facts } from "./db.ts";
 import { llmDeliver, llmPlan, llmRubric } from "./llm.ts";
 import {
-  blendScore,
-  factScore,
+  buildVerification,
+  checkClaims,
   formatDusdc,
   missionHash,
   parseDusdc,
+  payoutFor,
   quoteLine,
   rescaleBudgets,
+  round6Number,
 } from "./math.ts";
 import { eventsFor, publish } from "./sse.ts";
 import { DUSDC_MINT, PROGRAM_ID } from "./config.ts";
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+/** One retry per line: enough to show the loop, bounded enough to show a verdict. */
+export const MAX_ATTEMPTS = 2;
+
+const INSTRUCTION_LABELS: Record<InstructionName, string> = {
+  create_mandate: "owner signs the purchase plan and funds the vault",
+  register_provider: "owner adds a provider to the on-chain allowlist",
+  purchase: "agent commits vault funds against one line item",
+  settle: "verifier records the score and releases payment",
+  close_mandate: "owner closes the mandate and reclaims the vault",
+};
+
+export function txRef(instruction: InstructionName, signature: string): TxRef {
+  return {
+    instruction,
+    label: `${instruction} · ${INSTRUCTION_LABELS[instruction]}`,
+    signature,
+    explorerUrl: explorerTx(signature),
+  };
 }
 
 function demoLines(): LinePlan[] {
@@ -208,9 +239,11 @@ export async function signMission(id: string) {
   publish(id, {
     type: "create",
     act: 1,
-    message: "Mandate created on chain",
+    message: `Mandate created on chain with ${miss.lines.length} signed line items`,
     tx: created.signature,
     explorerUrl: null,
+    instruction: "create_mandate",
+    status: "signed",
   });
   return getMission(id);
 }
@@ -224,13 +257,30 @@ export async function runMission(id: string) {
   // release them. Refuse up front rather than orphan an unsettled order.
   if (!llmKey()) throw new Error(llmMissingMessage());
   db.prepare("UPDATE missions SET status=? WHERE id=?").run("running", id);
+  publish(id, { type: "status", act: 1, message: "Mission running", tx: null, explorerUrl: null, status: "running" });
   const agent = new AgentClient();
   const verifier = new VerifierClient();
   let act: 1 | 2 | 3 = 1;
+  let totalPaid = 0n;
+  const lineResults: Array<{ line: LinePlan; cleared: boolean; best: number }> = [];
+
   for (const line of miss.lines) {
     let attempts = 0;
-    while (attempts < 2) {
+    let cleared = false;
+    let best = 0;
+    while (attempts < MAX_ATTEMPTS) {
       attempts += 1;
+      // The penalty is what a retry costs us in the ECS model; showing it makes
+      // the loop legible instead of looking like the agent is stuck.
+      const spentPenalty = round6Number(RETRY_PENALTY * (attempts - 1));
+      publish(id, {
+        type: "attempt",
+        act,
+        message: `${line.categoryName} · attempt ${attempts}/${MAX_ATTEMPTS} · retry penalty ${spentPenalty} dUSDC`,
+        tx: null,
+        explorerUrl: null,
+      });
+
       const qs = (await quotesFor([line]))[0]!;
       for (const q of qs) {
         db.prepare("INSERT INTO quotes(mission_id, line_index, provider, payload) VALUES (?,?,?,?)").run(
@@ -240,13 +290,17 @@ export async function runMission(id: string) {
           JSON.stringify(q),
         );
       }
+      const quoteSummary = qs
+        .map((q) => `${q.provider} ${q.eligible ? `ECS ${q.ecs}` : q.ineligibleReason}`)
+        .join(" · ");
       publish(id, {
         type: "quotes",
         act,
-        message: `Quotes received · ${line.categoryName}`,
+        message: `Quotes · ${line.categoryName} · ${quoteSummary}`,
         tx: null,
         explorerUrl: null,
       });
+
       const chosen = pickQuote(qs);
       db.prepare("INSERT INTO decisions(mission_id, line_index, provider, payload) VALUES (?,?,?,?)").run(
         id,
@@ -257,45 +311,51 @@ export async function runMission(id: string) {
       publish(id, {
         type: "decision",
         act,
-        message: `${chosen.provider} chosen · ECS ${chosen.ecs}`,
+        // ECS is expected cost per success, so the cheapest number wins.
+        message: `${chosen.provider} chosen · lowest ECS ${chosen.ecs} dUSDC per success`,
         tx: null,
         explorerUrl: null,
       });
+
       const onchain = await readMandate(BigInt(miss.chainMissionId));
       const orderId = mandateNextOrderId(onchain);
+      const fullAmount = parseDusdc(chosen.full);
       const purchased = await agent.purchase({
         missionId: BigInt(miss.chainMissionId),
         lineIndex: line.index,
-        unitPrice: parseDusdc(chosen.full),
-        fullAmount: parseDusdc(chosen.full),
+        unitPrice: fullAmount,
+        fullAmount,
         claimedScore: chosen.claimedScore,
         provider: loadKey(chosen.provider).publicKey,
         orderId,
       });
-      publish(id, { type: "purchase", act, message: "Purchase submitted", tx: purchased.signature, explorerUrl: null });
-      const delivery = await llmDeliver(chosen.provider, miss.goal, line.categoryName);
-      db.prepare("INSERT INTO deliveries(mission_id, provider, markdown, claims_json) VALUES (?,?,?,?)").run(
-        id,
-        chosen.provider,
-        delivery.markdown,
-        JSON.stringify(delivery.claims),
-      );
-      const fact = factScore(delivery.claims, facts());
-      let rubric = 50;
-      try {
-        rubric = await llmRubric(miss.goal, delivery.markdown);
-      } catch (e) {
-        throw e;
-      }
-      const final = blendScore(fact, rubric);
+      publish(id, {
+        type: "purchase",
+        act,
+        message: `Purchase committed ${chosen.full} dUSDC to the vault for order ${orderId}`,
+        tx: purchased.signature,
+        explorerUrl: null,
+        instruction: "purchase",
+      });
+
+      const verification = await verify(id, act, miss.goal, line, chosen.provider);
+      const final = verification.finalScore;
+      best = Math.max(best, final);
+
       const settleTx = await verifier.settle({
         missionId: BigInt(miss.chainMissionId),
         orderId,
         score: final,
         provider: loadKey(chosen.provider).publicKey,
       });
+      const payout = payoutFor({ score: final, fullAmount, minScore: line.minScore });
+      totalPaid += parseDusdc(payout.paid);
+
       db.prepare(
-        "INSERT INTO orders(mission_id, chain_order_id, provider, line_index, claimed, verified, paid, purchase_tx, settle_tx) VALUES (?,?,?,?,?,?,?,?,?)",
+        `INSERT INTO orders(mission_id, chain_order_id, provider, line_index, claimed, verified, paid,
+          purchase_tx, settle_tx, line_min_score, tier, attempt, quotes_json, chosen_json, payout_json,
+          verification_json, deliverable, claims_json)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).run(
         id,
         orderId.toString(),
@@ -303,35 +363,147 @@ export async function runMission(id: string) {
         line.index,
         chosen.claimedScore,
         final,
-        formatDusdc(
-          final >= 90
-            ? parseDusdc(chosen.full)
-            : line.minScore < 90 && final >= line.minScore
-              ? parseDusdc(chosen.full) / 2n
-              : 0n,
-        ),
+        payout.paid,
         purchased.signature,
         settleTx,
+        line.minScore,
+        payout.tier,
+        attempts,
+        JSON.stringify(qs),
+        JSON.stringify(chosen),
+        JSON.stringify(payout),
+        JSON.stringify(verification),
+        verification.deliverable,
+        JSON.stringify(verification.claims),
       );
-      db.prepare("INSERT INTO verifications(mission_id, fact_score, rubric_score, final_score) VALUES (?,?,?,?)").run(
-        id,
-        fact,
-        rubric,
-        final,
-      );
+
       publish(id, {
         type: "settle",
         act,
-        message: `Settled score ${final}`,
+        message: `Settled ${chosen.provider} at ${final} · ${payout.rule} Paid ${payout.paid} dUSDC.`,
         tx: settleTx,
         explorerUrl: null,
+        instruction: "settle",
       });
-      if (final >= line.minScore) break;
+
+      if (final >= line.minScore) {
+        cleared = true;
+        break;
+      }
+      if (attempts < MAX_ATTEMPTS) {
+        publish(id, {
+          type: "retry",
+          act,
+          message: `${final} is under the ${line.minScore} minimum for ${line.categoryName} — retrying (${attempts}/${MAX_ATTEMPTS} used)`,
+          tx: null,
+          explorerUrl: null,
+        });
+      }
     }
+    lineResults.push({ line, cleared, best });
     if (act < 3) act = (act + 1) as 1 | 2 | 3;
   }
+
+  const passed = lineResults.every((r) => r.cleared);
+  const failedLines = lineResults.filter((r) => !r.cleared);
   db.prepare("UPDATE missions SET status=? WHERE id=?").run("settled", id);
+  publish(id, {
+    type: "verdict",
+    act: 3,
+    message: passed
+      ? `PASSED · every line met its minimum · total spent ${formatDusdc(totalPaid)} dUSDC of ${miss.budget}`
+      : `FAILED · ${failedLines
+          .map((r) => `${r.line.categoryName} peaked at ${r.best} vs min ${r.line.minScore}`)
+          .join("; ")} · total spent ${formatDusdc(totalPaid)} dUSDC of ${miss.budget}`,
+    tx: null,
+    explorerUrl: null,
+    status: "settled",
+  });
   return getMission(id);
+}
+
+/**
+ * Buys nothing and signs nothing: grades a deliverable and records exactly what
+ * the verifier saw. An LLM failure surfaces as a timeline event and aborts the
+ * run — a silently defaulted score would be indistinguishable from a real grade.
+ */
+async function verify(
+  missionId: string,
+  act: 1 | 2 | 3,
+  goal: string,
+  line: LinePlan,
+  provider: ProviderName,
+): Promise<Verification & { deliverable: string; claims: Array<{ key: string; value: number }> }> {
+  let delivery: Awaited<ReturnType<typeof llmDeliver>>;
+  try {
+    delivery = await llmDeliver(provider, goal, line.categoryName);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    publish(missionId, {
+      type: "error",
+      act,
+      message: `${provider} failed to deliver: ${msg}`,
+      tx: null,
+      explorerUrl: null,
+      status: "error",
+    });
+    db.prepare("UPDATE missions SET status=? WHERE id=?").run("error", missionId);
+    throw e;
+  }
+  db.prepare("INSERT INTO deliveries(mission_id, provider, markdown, claims_json) VALUES (?,?,?,?)").run(
+    missionId,
+    provider,
+    delivery.markdown,
+    JSON.stringify(delivery.claims),
+  );
+
+  let rubric: Awaited<ReturnType<typeof llmRubric>>;
+  try {
+    rubric = await llmRubric(goal, delivery.markdown);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    db.prepare("INSERT INTO verifications(mission_id, fact_score, rubric_score, final_score, error) VALUES (?,?,?,?,?)").run(
+      missionId,
+      null,
+      null,
+      -1,
+      msg,
+    );
+    publish(missionId, {
+      type: "error",
+      act,
+      message: `Verifier could not score ${provider}: ${msg}. No score was invented; the run stops here.`,
+      tx: null,
+      explorerUrl: null,
+      status: "error",
+    });
+    db.prepare("UPDATE missions SET status=? WHERE id=?").run("error", missionId);
+    throw e;
+  }
+
+  const checks = checkClaims(delivery.claims, facts());
+  const verification = buildVerification(checks, { score: rubric.score, reasoning: rubric.reasoning });
+  db.prepare(
+    "INSERT INTO verifications(mission_id, fact_score, rubric_score, final_score, raw_input, raw_output) VALUES (?,?,?,?,?,?)",
+  ).run(
+    missionId,
+    verification.factScore,
+    verification.rubricScore,
+    verification.finalScore,
+    rubric.rawInput,
+    rubric.rawOutput,
+  );
+  const checkText = checks.length
+    ? checks.map((c) => `${c.key} ${c.claimed} vs ${c.expected} → ${c.points}`).join(" · ")
+    : "no checkable claims";
+  publish(missionId, {
+    type: "verify",
+    act,
+    message: `Graded ${provider} · facts ${verification.factScore ?? "n/a"} (${checkText}) · rubric ${rubric.score} (${rubric.reasoning}) · ${verification.formula}`,
+    tx: null,
+    explorerUrl: null,
+  });
+  return { ...verification, deliverable: delivery.markdown, claims: delivery.claims };
 }
 
 export async function closeMission(id: string) {
@@ -339,15 +511,40 @@ export async function closeMission(id: string) {
   const owner = new OwnerClient();
   const sig = await owner.closeMandate(BigInt(miss.chainMissionId));
   db.prepare("UPDATE missions SET status=?, close_tx=? WHERE id=?").run("closed", sig, id);
-  publish(id, { type: "close", act: 3, message: "Mandate closed, vault returned", tx: sig, explorerUrl: null });
+  publish(id, {
+    type: "close",
+    act: 3,
+    message: "Mandate closed, unspent vault balance returned to the owner",
+    tx: sig,
+    explorerUrl: null,
+    instruction: "close_mandate",
+    status: "closed",
+  });
   return getMission(id);
 }
 
-export async function warmup(n: number) {
+/**
+ * Seeds on-chain provider history so ECS has something to learn from. Scores
+ * are fixed per provider on purpose: this is a ledger bootstrap, not a demo of
+ * the verifier. Each provider is given a score that lands in a different payout
+ * tier against the line minimum, so the resulting history exercises all three.
+ */
+function warmupScore(provider: ProviderName, minScore: number): number {
+  if (provider === "premium") return 93; // >= 90, full payment
+  if (provider === "deep") return Math.min(89, minScore + 1); // clears the min, half payment
+  return Math.max(0, minScore - 20); // under the min, zero payment
+}
+
+export async function* warmupStream(n: number): AsyncGenerator<
+  { kind: "progress"; progress: WarmupProgress } | { kind: "summary"; rows: WarmupSummaryRow[] }
+> {
   const err = chainConfigured();
   if (err) throw new Error(err);
   const names: ProviderName[] = ["alpha", "deep", "premium"];
-  const results = [];
+  const tally = new Map<
+    ProviderName,
+    { missions: number; verified: number; claimed: number; paid: bigint }
+  >();
   for (let i = 0; i < n; i++) {
     const planned = await planMission(DEMO_GOAL, DEMO_BUDGET);
     await signMission(planned.id);
@@ -360,24 +557,28 @@ export async function warmup(n: number) {
     const quote = qs.find((q) => q.provider === provider && q.eligible) ?? qs.find((q) => q.eligible)!;
     const onchain = await readMandate(BigInt(miss.chainMissionId));
     const orderId = mandateNextOrderId(onchain);
+    const fullAmount = parseDusdc(quote.full);
     const purchased = await agent.purchase({
       missionId: BigInt(miss.chainMissionId),
       lineIndex: line.index,
-      unitPrice: parseDusdc(quote.full),
-      fullAmount: parseDusdc(quote.full),
+      unitPrice: fullAmount,
+      fullAmount,
       claimedScore: quote.claimedScore,
       provider: loadKey(provider).publicKey,
       orderId,
     });
-    const score = provider === "alpha" ? 61 : provider === "deep" ? 80 : 93;
+    const score = warmupScore(provider, line.minScore);
     const settleTx = await verifier.settle({
       missionId: BigInt(miss.chainMissionId),
       orderId,
       score,
       provider: loadKey(provider).publicKey,
     });
+    const payout = payoutFor({ score, fullAmount, minScore: line.minScore });
     db.prepare(
-      "INSERT INTO orders(mission_id, chain_order_id, provider, line_index, claimed, verified, paid, purchase_tx, settle_tx) VALUES (?,?,?,?,?,?,?,?,?)",
+      `INSERT INTO orders(mission_id, chain_order_id, provider, line_index, claimed, verified, paid,
+        purchase_tx, settle_tx, line_min_score, tier, attempt, chosen_json, payout_json)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       planned.id,
       orderId.toString(),
@@ -385,16 +586,73 @@ export async function warmup(n: number) {
       line.index,
       quote.claimedScore,
       score,
-      formatDusdc(score >= 90 ? parseDusdc(quote.full) : score >= line.minScore && line.minScore < 90 ? parseDusdc(quote.full) / 2n : 0n),
+      payout.paid,
       purchased.signature,
       settleTx,
+      line.minScore,
+      payout.tier,
+      1,
+      JSON.stringify(quote),
+      JSON.stringify(payout),
     );
     await closeMission(planned.id);
-    results.push({ missionId: planned.id, provider, score, purchase: purchased.signature, settle: settleTx });
+
+    const agg = tally.get(provider) ?? { missions: 0, verified: 0, claimed: 0, paid: 0n };
+    agg.missions += 1;
+    agg.verified += score;
+    agg.claimed += quote.claimedScore;
+    agg.paid += parseDusdc(payout.paid);
+    tally.set(provider, agg);
+
+    yield {
+      kind: "progress",
+      progress: {
+        index: i + 1,
+        total: n,
+        provider,
+        claimed: quote.claimedScore,
+        verified: score,
+        paid: payout.paid,
+        tier: payout.tier,
+        txs: [
+          txRef("purchase", purchased.signature),
+          txRef("settle", settleTx),
+        ],
+      },
+    };
     const { pace } = await import("./llm.ts");
     await pace();
   }
-  return results;
+
+  yield {
+    kind: "summary",
+    rows: names.map((provider) => {
+      const agg = tally.get(provider);
+      if (!agg || agg.missions === 0) {
+        return { provider, missions: 0, meanVerified: null, meanClaimed: null, totalPaid: "0.000000", honestyGap: null };
+      }
+      const meanVerified = agg.verified / agg.missions;
+      const meanClaimed = agg.claimed / agg.missions;
+      return {
+        provider,
+        missions: agg.missions,
+        meanVerified,
+        meanClaimed,
+        totalPaid: formatDusdc(agg.paid),
+        honestyGap: meanClaimed - meanVerified,
+      };
+    }),
+  };
+}
+
+export async function warmup(n: number) {
+  const progress: WarmupProgress[] = [];
+  let summary: WarmupSummaryRow[] = [];
+  for await (const msg of warmupStream(n)) {
+    if (msg.kind === "progress") progress.push(msg.progress);
+    else summary = msg.rows;
+  }
+  return { progress, summary };
 }
 
 export async function health(): Promise<HealthResponse> {
@@ -520,19 +778,26 @@ export async function runAttacks(): Promise<AttackRun[]> {
 
   async function record(name: AttackRun["name"], expected: string, actual: string, tx: string | null, logs: string[]) {
     const outcome = actual === expected || (name === "overclaim" && actual === "paid 0") ? "expected" : "unexpected";
-    const explorerUrl = tx ? (await import("./config.ts")).explorerTx(tx) : null;
+    const explorerUrl = tx ? explorerTx(tx) : null;
+    const card = ATTACK_CARDS.find((c) => c.name === name)!;
+    // The one log line the program emitted to reject this, so the card can show
+    // the program's own words rather than our summary of them.
+    const errorLine =
+      logs.find((l) => /Error Code:|AnchorError|custom program error/i.test(l))?.trim() ?? null;
     db.prepare(
-      "INSERT INTO attack_runs(name, expected, actual, outcome, tx, explorer_url, logs, ts) VALUES (?,?,?,?,?,?,?,?)",
-    ).run(name, expected, actual, outcome, tx, explorerUrl, JSON.stringify(logs), nowIso());
+      "INSERT INTO attack_runs(name, expected, actual, outcome, tx, explorer_url, logs, ts, instruction, error_line) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ).run(name, expected, actual, outcome, tx, explorerUrl, JSON.stringify(logs), nowIso(), card.instruction, errorLine);
     runs.push({
       name,
-      title: ATTACK_CARDS.find((c) => c.name === name)!.title,
+      title: card.title,
       expected,
       actual,
       outcome,
       tx,
       explorerUrl,
+      instruction: card.instruction,
       logs,
+      errorLine,
     });
   }
 
@@ -732,18 +997,88 @@ export async function honesty(): Promise<Array<{ provider: ProviderName; n: numb
   return out;
 }
 
-export function receipts() {
-  return db
-    .prepare(
-      "SELECT chain_order_id as orderId, mission_id as missionId, provider, claimed, verified, paid, settle_tx as tx FROM orders WHERE settle_tx IS NOT NULL ORDER BY id DESC",
-    )
-    .all() as Array<{
-    orderId: string;
-    missionId: string;
-    provider: ProviderName;
-    claimed: number;
-    verified: number;
-    paid: string;
-    tx: string;
-  }>;
+type OrderRow = {
+  orderId: string;
+  missionId: string;
+  provider: ProviderName;
+  lineIndex: number;
+  claimed: number;
+  verified: number;
+  paid: string;
+  tier: PayoutTier | null;
+  attempt: number | null;
+  purchaseTx: string | null;
+  tx: string;
+  quotesJson: string | null;
+  chosenJson: string | null;
+  payoutJson: string | null;
+  verificationJson: string | null;
+  deliverable: string | null;
+  claimsJson: string | null;
+  goal: string;
+  createTx: string | null;
+  closeTx: string | null;
+  linesJson: string;
+};
+
+const ORDER_SELECT = `
+  SELECT o.chain_order_id as orderId, o.mission_id as missionId, o.provider, o.line_index as lineIndex,
+         o.claimed, o.verified, o.paid, o.tier, o.attempt, o.purchase_tx as purchaseTx, o.settle_tx as tx,
+         o.quotes_json as quotesJson, o.chosen_json as chosenJson, o.payout_json as payoutJson,
+         o.verification_json as verificationJson, o.deliverable, o.claims_json as claimsJson,
+         m.goal, m.create_tx as createTx, m.close_tx as closeTx, m.lines_json as linesJson
+  FROM orders o JOIN missions m ON m.id = o.mission_id
+  WHERE o.settle_tx IS NOT NULL`;
+
+function parseJson<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function toDetail(row: OrderRow): ReceiptDetail {
+  const lines = parseJson<LinePlan[]>(row.linesJson) ?? [];
+  const payout = parseJson<PayoutMath>(row.payoutJson);
+  const txs: TxRef[] = [];
+  if (row.createTx) txs.push(txRef("create_mandate", row.createTx));
+  if (row.purchaseTx) txs.push(txRef("purchase", row.purchaseTx));
+  txs.push(txRef("settle", row.tx));
+  if (row.closeTx) txs.push(txRef("close_mandate", row.closeTx));
+  return {
+    orderId: row.orderId,
+    missionId: row.missionId,
+    provider: row.provider,
+    claimed: row.claimed,
+    verified: row.verified,
+    paid: row.paid,
+    tier: row.tier ?? payout?.tier ?? (row.paid === "0.000000" ? "zero" : "full"),
+    tx: row.tx,
+    explorerUrl: explorerTx(row.tx),
+    goal: row.goal,
+    line: lines.find((l) => l.index === row.lineIndex) ?? null,
+    quotes: parseJson<Quote[]>(row.quotesJson) ?? [],
+    chosen: parseJson<Quote>(row.chosenJson),
+    attempt: row.attempt ?? 1,
+    maxAttempts: MAX_ATTEMPTS,
+    deliverable: row.deliverable ?? "",
+    claims: parseJson<Array<{ key: string; value: number }>>(row.claimsJson) ?? [],
+    verification: parseJson<Verification>(row.verificationJson),
+    payout,
+    txs,
+  };
+}
+
+export function receipts(): ReceiptDetail[] {
+  const rows = db.prepare(`${ORDER_SELECT} ORDER BY o.id DESC`).all() as OrderRow[];
+  return rows.map(toDetail);
+}
+
+export function receipt(orderId: string, missionId: string): ReceiptDetail | null {
+  const row = db
+    .prepare(`${ORDER_SELECT} AND o.chain_order_id = ? AND o.mission_id = ?`)
+    .get(orderId, missionId) as OrderRow | undefined;
+  return row ? toDetail(row) : null;
 }

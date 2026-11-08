@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 import { resolve } from "node:path";
+import type { RefFact } from "../../shared/types.ts";
 import { ROOT_DIR } from "./config.ts";
+import { NVIDIA_FACTS } from "./math.ts";
 
 export const db = new Database(resolve(ROOT_DIR, "server", "mandate.sqlite"));
 db.pragma("journal_mode = WAL");
@@ -84,15 +86,56 @@ CREATE TABLE IF NOT EXISTS attack_runs (
 );
 CREATE TABLE IF NOT EXISTS reference_facts (
   key TEXT PRIMARY KEY,
-  value REAL NOT NULL
+  label TEXT NOT NULL,
+  value REAL NOT NULL,
+  unit TEXT NOT NULL,
+  tolerance REAL NOT NULL
 );
 `);
 
-const insertFacts = db.prepare("INSERT OR REPLACE INTO reference_facts(key, value) VALUES (?, ?)");
-insertFacts.run("revenue_ttm_b", 130.497);
-insertFacts.run("gross_margin", 0.7499);
-insertFacts.run("data_center_pct", 0.88);
+/** Columns added after the first release; ignore the error when they exist. */
+for (const sql of [
+  "ALTER TABLE orders ADD COLUMN line_min_score INTEGER",
+  "ALTER TABLE orders ADD COLUMN tier TEXT",
+  "ALTER TABLE orders ADD COLUMN attempt INTEGER",
+  "ALTER TABLE orders ADD COLUMN quotes_json TEXT",
+  "ALTER TABLE orders ADD COLUMN chosen_json TEXT",
+  "ALTER TABLE orders ADD COLUMN payout_json TEXT",
+  "ALTER TABLE orders ADD COLUMN verification_json TEXT",
+  "ALTER TABLE orders ADD COLUMN deliverable TEXT",
+  "ALTER TABLE orders ADD COLUMN claims_json TEXT",
+  "ALTER TABLE events ADD COLUMN instruction TEXT",
+  "ALTER TABLE events ADD COLUMN status TEXT",
+  "ALTER TABLE attack_runs ADD COLUMN instruction TEXT",
+  "ALTER TABLE attack_runs ADD COLUMN error_line TEXT",
+  "ALTER TABLE verifications ADD COLUMN raw_input TEXT",
+  "ALTER TABLE verifications ADD COLUMN raw_output TEXT",
+  "ALTER TABLE verifications ADD COLUMN error TEXT",
+]) {
+  try {
+    db.exec(sql);
+  } catch (e) {
+    if (!/duplicate column name/i.test(String(e))) throw e;
+  }
+}
 
-export function facts(): Array<{ key: string; value: number }> {
-  return db.prepare("SELECT key, value FROM reference_facts").all() as Array<{ key: string; value: number }>;
+// reference_facts gained columns; drop a pre-upgrade table rather than guess.
+try {
+  db.prepare("SELECT unit FROM reference_facts LIMIT 1").get();
+} catch {
+  db.exec("DROP TABLE reference_facts");
+  db.exec(
+    "CREATE TABLE reference_facts (key TEXT PRIMARY KEY, label TEXT NOT NULL, value REAL NOT NULL, unit TEXT NOT NULL, tolerance REAL NOT NULL)",
+  );
+}
+
+const insertFact = db.prepare(
+  "INSERT OR REPLACE INTO reference_facts(key, label, value, unit, tolerance) VALUES (?,?,?,?,?)",
+);
+for (const f of NVIDIA_FACTS) insertFact.run(f.key, f.label, f.value, f.unit, f.tolerance);
+
+export function facts(): RefFact[] {
+  return db
+    .prepare("SELECT key, label, value, unit, tolerance FROM reference_facts")
+    .all() as RefFact[];
 }
