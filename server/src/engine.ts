@@ -202,12 +202,19 @@ export async function quotesFor(lines: LinePlan[]): Promise<Quote[][]> {
   return out;
 }
 
-function pickQuote(qs: Quote[]): Quote {
+/**
+ * ECS is expected cost per success, so the lowest number wins.
+ *
+ * `exclude` carries the providers that already failed this line. Provider stats
+ * are global, so a provider that just missed a hard line's minimum still looks
+ * cheap on the next attempt and would be picked again forever. Retrying is only
+ * worth paying for if it escalates.
+ */
+function pickQuote(qs: Quote[], exclude: ReadonlySet<ProviderName> = new Set()): Quote {
   const eligible = qs.filter((q) => q.eligible && q.ecs);
   if (eligible.length === 0) throw new Error("No eligible quotes");
-  return eligible.sort(
-    (a, b) => Number(parseDusdc(a.ecs!) - parseDusdc(b.ecs!)),
-  )[0]!;
+  const byEcs = [...eligible].sort((a, b) => Number(parseDusdc(a.ecs!) - parseDusdc(b.ecs!)));
+  return byEcs.find((q) => !exclude.has(q.provider)) ?? byEcs[0]!;
 }
 
 export async function signMission(id: string) {
@@ -268,6 +275,7 @@ export async function runMission(id: string) {
     let attempts = 0;
     let cleared = false;
     let best = 0;
+    const failed = new Set<ProviderName>();
     while (attempts < MAX_ATTEMPTS) {
       attempts += 1;
       // The penalty is what a retry costs us in the ECS model; showing it makes
@@ -301,7 +309,7 @@ export async function runMission(id: string) {
         explorerUrl: null,
       });
 
-      const chosen = pickQuote(qs);
+      const chosen = pickQuote(qs, failed);
       db.prepare("INSERT INTO decisions(mission_id, line_index, provider, payload) VALUES (?,?,?,?)").run(
         id,
         line.index,
@@ -312,7 +320,9 @@ export async function runMission(id: string) {
         type: "decision",
         act,
         // ECS is expected cost per success, so the cheapest number wins.
-        message: `${chosen.provider} chosen · lowest ECS ${chosen.ecs} dUSDC per success`,
+        message: failed.size
+          ? `${chosen.provider} chosen · lowest ECS ${chosen.ecs} dUSDC per success among providers that have not already failed this line (${[...failed].join(", ")} excluded)`
+          : `${chosen.provider} chosen · lowest ECS ${chosen.ecs} dUSDC per success`,
         tx: null,
         explorerUrl: null,
       });
@@ -390,6 +400,7 @@ export async function runMission(id: string) {
         cleared = true;
         break;
       }
+      failed.add(chosen.provider);
       if (attempts < MAX_ATTEMPTS) {
         publish(id, {
           type: "retry",

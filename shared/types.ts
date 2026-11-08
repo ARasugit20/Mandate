@@ -271,7 +271,13 @@ export type WarmupSummaryRow = {
 
 export const DEMO_GOAL = "Research NVIDIA and write a short investment brief";
 export const DEMO_BUDGET = "1.000000";
-export const DEMO_RESEARCH_CAP = "0.100000";
+/**
+ * The research line is the one the owner is willing to pay up for. The cap has
+ * to clear the premium tier's price, or the only provider that can clear the
+ * 90-point full-payment bar is permanently ineligible and ECS has nothing to
+ * choose between.
+ */
+export const DEMO_RESEARCH_CAP = "0.250000";
 
 export const ATTACK_CARDS: Array<{
   name: AttackName;
