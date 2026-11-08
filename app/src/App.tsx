@@ -27,11 +27,18 @@ const TABS: Array<[Tab, string]> = [
   ["setup", "setup"],
 ];
 
-function readTheme(): "light" | "dark" {
+type Theme = "system" | "light" | "dark";
+const THEME_KEY = "assay:theme";
+const NEXT_THEME: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
+const THEME_LABEL: Record<Theme, string> = { system: "Auto", light: "Light", dark: "Dark" };
+
+/** "system" follows the OS light/dark setting; light or dark pins it. */
+function readTheme(): Theme {
   try {
-    return localStorage.getItem("assay-theme") === "dark" ? "dark" : "light";
+    const t = localStorage.getItem(THEME_KEY);
+    return t === "light" || t === "dark" ? t : "system";
   } catch {
-    return "light";
+    return "system";
   }
 }
 
@@ -53,12 +60,13 @@ export function App() {
   const [setupMsg, setSetupMsg] = useState<string | null>(null);
   const [pending, setPending] = useState<{ text: string; go: () => void } | null>(null);
   const [stage, setStage] = useState(false);
-  const [theme, setTheme] = useState(readTheme);
+  const [theme, setTheme] = useState<Theme>(readTheme);
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    if (theme === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
     try {
-      localStorage.setItem("assay-theme", theme);
+      localStorage.setItem(THEME_KEY, theme);
     } catch {
       /* private mode */
     }
@@ -288,8 +296,13 @@ export function App() {
           <button className="btn" type="button" onClick={() => setStage(true)} title="Stage mode (S)">
             Stage
           </button>
-          <button className="btn" type="button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle dark mode">
-            {theme === "dark" ? "Light" : "Dark"}
+          <button
+            className="btn"
+            type="button"
+            onClick={() => setTheme(NEXT_THEME[theme])}
+            title={theme === "system" ? "Following your system's light or dark setting" : `Pinned to ${theme}. Click to change.`}
+          >
+            Theme: {THEME_LABEL[theme]}
           </button>
         </header>
 

@@ -55,6 +55,33 @@
   --fix-line: #3d3420;
   color-scheme: dark;
 }
+/* Follow the system setting unless the viewer picked a theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0e10;
+    --paper: #141519;
+    --bench: #111215;
+    --rule: #2a2b30;
+    --rule-2: #3a3b42;
+    --grid: #1a1b1f;
+    --ink: #ecebe6;
+    --ink-2: #b2b1aa;
+    --ink-3: #8b8a84;
+    --gold: #cfaa5d;
+    --gold-2: #e2c27f;
+    --gold-soft: #2a2416;
+    --paid: #5cbf94;
+    --paid-soft: #13271f;
+    --rej: #e07a6c;
+    --rej-soft: #2d1614;
+    --part: #d9a54e;
+    --part-soft: #2b210f;
+    --fix: #e2c27f;
+    --fix-bg: #211c10;
+    --fix-line: #3d3420;
+    color-scheme: dark;
+  }
+}
 
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }
